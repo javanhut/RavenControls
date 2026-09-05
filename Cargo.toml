@@ -1,0 +1,41 @@
+# RavenControls: keyboard backlight and fan control for Raven Linux.
+#
+# Three crates, and the split is the whole design:
+#
+#   raven-hw         what this machine exposes, discovered at runtime. No GTK,
+#                    no daemon, no root, and every path it touches is relative
+#                    to a `Root` so the whole layer runs against captured sysfs
+#                    trees from machines nobody here owns.
+#   raven-controlsd  the privileged half: it owns fan writes, runs curves, and
+#                    is the thing that hands the fans back to firmware when it
+#                    dies.
+#   raven-controls   the window. It renders whatever raven-hw found and nothing
+#                    it did not.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/raven-hw",
+    "crates/raven-controlsd",
+    "crates/raven-controls",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/javanhut/RavenControls"
+
+[workspace.dependencies]
+raven-hw = { path = "crates/raven-hw", default-features = false }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

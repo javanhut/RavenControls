@@ -1,0 +1,3 @@
+asus_wmi 90112 1 hid_asus, Live 0x0000000000000000
+hid_asus 32768 0 - Live 0x0000000000000000
+platform_profile 20480 1 asus_wmi, Live 0x0000000000000000

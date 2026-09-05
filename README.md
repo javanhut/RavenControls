@@ -1,0 +1,195 @@
+# Raven Controls
+
+Keyboard backlight, fan speeds and thermal profiles for Raven Linux — on
+whatever machine it is installed on, not on one laptop.
+
+GTK 4 + libadwaita, in Rust. No vendor SDK, no `asusctl`, no `nbfc`, no
+reverse-engineered blob. Everything here drives interfaces that are documented
+in the Linux kernel tree.
+
+```
+make            # build the window and the daemon
+make run        # open the window
+make probe      # print what this machine exposes, and why it does not expose the rest
+make test       # 79 tests, ten of them against captured machines nobody here owns
+sudo make install
+```
+
+or with imlazy: `imlazy build`, `imlazy run`, `imlazy probe`, `imlazy install`.
+
+## The problem this is built around
+
+It takes about fifteen lines to control the keyboard light on a ROG Zephyrus.
+Those fifteen lines work on a ROG Zephyrus.
+
+The same is true of every other laptop, which is why there are a dozen
+single-vendor tools and no general one. Write against `asus-nb-wmi` and you
+have an ASUS tool; write against `/proc/acpi/ibm/fan` and you have a ThinkPad
+tool. Neither survives contact with the next machine.
+
+**So nothing here asks what laptop it is running on.** It asks what interfaces
+the kernel exposes, because the kernel has already done the per-vendor work and
+published one name for the result:
+
+| What | Where the kernel puts it | Covers |
+|---|---|---|
+| Keyboard backlight | `/sys/class/leds/*::kbd_backlight` | asus, dell, tpacpi, smc, hp, msi, samsung, system76, chromeos — every driver that has one |
+| RGB keyboard | the same, plus `multi_index` / `multi_intensity` | anything using the multicolour LED class |
+| Fan duty and speed | `/sys/class/hwmon/*/pwm*`, `fan*_input` | nct6775, it87, amdgpu, nouveau, dell-smm, thinkpad_acpi, applesmc, asus-ec-sensors |
+| Coarse thermal modes | `/sys/firmware/acpi/platform_profile` | ASUS, Lenovo, HP, Dell, Framework, MSI, Surface |
+| ACPI fans | `/sys/class/thermal/cooling_device*` | machines with `PNP0C0B` or `INT3404` and nothing else |
+| Backlight without root | `org.freedesktop.UPower.KbdBacklight` | any distribution running UPower |
+
+Grep the source for a vendor name and you will find them in two places: a table
+of documented sysfs attributes in `fan/vendor.rs`, and a list of kernel modules
+in `diagnose.rs`. Both are **data**. Adding a machine is a row, not a provider,
+and never a UI change.
+
+## How that shape falls out
+
+```
+crates/raven-hw         what this machine can do. No GTK, no daemon, no root.
+crates/raven-controlsd  the privileged half: owns fan writes, runs curves, and
+                        hands the fans back when it dies.
+crates/raven-controls   the window.
+```
+
+Each provider publishes `Knob`s described by a **domain** — a percentage,
+ordered steps, named modes, a switch, a colour — and the window renders
+domains. Four widgets cover every fan and backlight interface in the kernel, so
+a laptop with four fans and an RGB keyboard and a laptop with one two-level
+light run the same code and get windows that fit them.
+
+## Testing machines nobody here owns
+
+Every path in `raven-hw` goes through a `Root`, so discovery can be pointed at a
+captured `/sys` instead of the live one. `crates/raven-hw/tests/fixtures` holds
+ten of them and `tests/machines.rs` asserts against each:
+
+| Fixture | What it pins down |
+|---|---|
+| `zephyrus-gu502du` | four-step light, ten decoy LEDs, and no fan interface at all |
+| `thinkpad-t14` | LED light, hwmon PWM, platform profile and procfs fan at once |
+| `desktop-nct6798` | five headers in Smart Fan IV (`pwm_enable = 5`) plus a Radeon |
+| `dual-gpu` | two chips with the same driver name |
+| `rgb-keyboard` | the multicolour LED class |
+| `macbook-applesmc` | fan speeds with nothing to drive |
+| `acpi-fan` | `cur_state` fans among cooling devices that are throttles |
+| `multi-handler-profile` | the kernel 6.14 platform-profile layout and its alias |
+| `bare-machine` | nothing found, which is a result and not a failure |
+| `zephyrus-with-module` | what the diagnosis promises, actually delivered |
+
+Two real bugs came out of writing those, both invisible on the machine this was
+developed on: `fan1_input` and `temp1_input` were never matched, so any MacBook
+would have reported no fans; and `pwm1_enable`'s driver-specific automatic modes
+were being flattened onto the generic `2`, which would have stranded most
+desktop boards.
+
+If RavenControls gets your machine wrong:
+
+```
+raven-controls --capture ~/machine
+```
+
+That writes the subset of `/sys`, `/proc` and the kernel config it reads — LED
+and hwmon attributes, thermal zones, DMI identification, the module list; no
+serial numbers, no UUIDs, no user data, and the list is at the top of
+`capture.rs` to read before sending anything. Drop the directory into
+`tests/fixtures/`, add a test, and that machine is regression-tested forever by
+people who do not own one.
+
+## When there is nothing to show
+
+`make probe` on the laptop this was written on:
+
+```
+ASUSTeK COMPUTER INC. Zephyrus G GU502DU_GA502DU, Linux 6.17.11-raven
+
+== controls
+  [KeyboardBacklight] Keyboard backlight
+      domain   Percent { raw_max: 3 }
+      writable false
+
+== why there is no fan control here
+  asus_nb_wmi would add platform profile, throttle policy, fan boost — it is
+  built for this kernel but not loaded:
+      sudo modprobe asus_nb_wmi
+  asus_ec_sensors would add fan speeds and temperatures, but this kernel was
+  built without CONFIG_SENSORS_ASUS_EC.
+```
+
+An empty window that says "not supported" tells its owner nothing about whether
+the machine cannot do it or whether a module is simply not loaded. This reads
+`/proc/modules` and the kernel config — including `/proc/config.gz` — and tells
+the three cases apart: built and not loaded (here is the line to type), never
+compiled (no amount of modprobe will help), or loaded already and still nothing
+(the firmware is the limit; stop chasing it).
+
+## Fans, and why there is a daemon
+
+Setting a fan speed means writing `pwmN_enable=1`, and from that moment the
+firmware's thermal management is off. If whatever did that stops running —
+crashes, is killed, is upgraded, or is a settings window somebody closed — the
+fan stays exactly where it was left. At 0% under load that is a thermal
+shutdown at best.
+
+So `raven-controlsd` owns fan writes, and:
+
+- records each channel's original `pwmN_enable` and restores it on `Drop`,
+  which covers returns and panics;
+- installs SIGTERM/SIGINT/SIGHUP handlers, because `Drop` does not run for a
+  signal, and `raven-rc stop` and Ctrl-C are both signals;
+- runs a **watchdog** on its own control loop — a tick that has not completed in
+  20 seconds hands every channel back to firmware, without needing the lock the
+  stuck thread is holding;
+- **re-asserts** `pwmN_enable=1` every tick, because firmware silently takes the
+  channel back across suspend/resume;
+- goes to **full duty** and says so when a sensor passes the temperature its own
+  driver calls critical — the curve stops being the authority there;
+- **verifies every write by reading it back**, because plenty of embedded
+  controllers accept a PWM write, return success, and change nothing.
+
+The window refuses to take manual fan control when the daemon is not running,
+and says why. The shipped udev rule deliberately grants the keyboard light and
+**not** the fans; `data/90-raven-controls.rules` explains that at length, and a
+test asserts nobody has helpfully added it.
+
+## Fan curves
+
+Curves live in the daemon, persist to `/var/lib/raven-controls/state.json`, and
+are re-applied at start — a curve is a setting, not a session. The editor is a
+graph you drag, with the live temperature drawn on it.
+
+The curve engine is pure and unit-tested, and it earns that by getting three
+things right that a plain interpolation gets wrong:
+
+- **Oscillation.** A CPU ticking between 61 and 62 degrees makes a naive
+  controller audibly surge once a second. Temperature is followed up
+  immediately and down only after it has fallen past a hysteresis band.
+- **Stall.** Most fans will not start from rest below about a fifth of full
+  duty; commanded to 8% they sit still while the curve believes it is cooling.
+  Non-zero outputs are raised to a floor. Zero stays zero, so a fan can stop.
+- **Extrapolation.** A curve drawn between 40 and 90 degrees says nothing about
+  120, and a linear extension would confidently answer 160%. It is flat outside
+  its endpoints.
+
+## Installing
+
+```bash
+sudo make install
+make install-udev     # keyboard backlight without root, via the video group
+```
+
+Fan control additionally needs the daemon:
+
+```bash
+sudo cp data/controlsd.toml /etc/raven/init.d/
+sudo raven-rc reload && sudo raven-rc start controlsd
+```
+
+`video` is the group the Raven session already holds for DRM, so neither step
+adds a group or grants anything a logged-in user did not already have.
+
+## Licence
+
+GPL-3.0-or-later.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Controls
+GenericName=Keyboard Backlight and Fans
+Comment=Keyboard backlight, fan speeds and thermal profiles
+Exec=raven-controls
+Icon=com.ravencontrols.Raven
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=keyboard;backlight;fan;cooling;thermal;rpm;curve;
+StartupNotify=true

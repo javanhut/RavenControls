@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A fan, because it is the half of RavenControls with something to draw. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <circle cx="32" cy="32" r="29" fill="#1c2230"/>
+  <g fill="#5aa2e8">
+    <path d="M32 10c6 0 10 4 10 8s-4 6-8 8l-4 4V10z" opacity="0.95"/>
+    <path d="M54 32c0 6-4 10-8 10s-6-4-8-8l-4-4h20z" opacity="0.8"/>
+    <path d="M32 54c-6 0-10-4-10-8s4-6 8-8l4-4v20z" opacity="0.95"/>
+    <path d="M10 32c0-6 4-10 8-10s6 4 8 8l4 4H10z" opacity="0.8"/>
+  </g>
+  <circle cx="32" cy="32" r="5" fill="#e8eef8"/>
+</svg>

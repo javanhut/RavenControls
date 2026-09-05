@@ -1,0 +1,23 @@
+# raven-controlsd -- the fan and backlight daemon, managed by raven-init.
+#
+#   sudo cp contrib/controlsd.toml /etc/raven/init.d/
+#   sudo raven-rc reload && sudo raven-rc start controlsd
+#
+# It creates /run/raven-controls/ctl as root:video 0660 and re-applies whatever
+# fan curves were saved in /var/lib/raven-controls/state.json.
+#
+# `restart = true` matters more here than for most services. If the daemon dies
+# while it is driving a fan, that fan is left under manual control; restarting
+# gets something back in charge of it within a couple of seconds, and the
+# restarted daemon re-applies the saved curve onto a channel firmware may have
+# meanwhile taken back.
+
+[[services]]
+name = "controlsd"
+description = "Keyboard backlight and fan control (RavenControls)"
+exec = "/usr/local/bin/raven-controlsd"
+args = []
+after = []
+restart = true
+enabled = true
+critical = false

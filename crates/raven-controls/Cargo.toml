@@ -1,0 +1,25 @@
+[package]
+name = "raven-controls"
+description = "Keyboard backlight and fan control for Raven Linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "raven-controls"
+path = "src/main.rs"
+
+[dependencies]
+raven-hw = { workspace = true, features = ["upower"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Pinned to the same gtk-rs generation as RavenSettingsUI and RavenFileManager
+# so the three resolve one set of bindings on the image.
+gtk4 = { version = "0.10", features = ["v4_12"] }
+libadwaita = { version = "0.8", features = ["v1_5"] }
+glib = "0.21"

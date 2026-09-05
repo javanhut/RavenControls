@@ -1,0 +1,27 @@
+[package]
+name = "raven-hw"
+description = "Runtime discovery of keyboard-backlight and fan-control interfaces on Linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+# /proc/config.gz is how Arch-derived kernels -- Raven's included -- publish the
+# configuration they were built with, and it is the only copy on a machine with
+# no /boot/config-*. Reading it is the difference between telling someone "this
+# module is built and not loaded, type this" and "it might help, try it and see".
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# UPower's KbdBacklight is the standard unprivileged path on distributions that
+# run UPower. Blocking API only: nothing here owns an async runtime.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"], optional = true }
+
+[features]
+default = ["upower"]
+upower = ["dep:zbus"]

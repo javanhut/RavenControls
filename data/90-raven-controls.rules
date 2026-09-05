@@ -1,0 +1,32 @@
+# Let the session set the keyboard backlight and read the fans without root.
+#
+#   sudo install -Dm644 90-raven-controls.rules /etc/udev/rules.d/90-raven-controls.rules
+#   sudo udevadm control --reload && sudo udevadm trigger -s leds
+#
+# `video` is the group the Raven session already holds for DRM, so this grants
+# nothing that a logged-in user did not already have, and adds no new group to
+# explain to anybody.
+#
+# Matched on the LED *function* -- the `kbd_backlight` suffix from the kernel's
+# `devicename:colour:function` naming -- rather than on any driver, so this one
+# rule covers asus, dell, tpacpi, smc, hp, msi, samsung, system76_acpi,
+# chromeos and every other driver that publishes a keyboard light the documented
+# way. There is deliberately no vendor named in this file.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight", RUN+="/bin/chgrp video /sys/class/leds/%k/brightness", RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"
+
+# The multicolour keyboards, where the driver implements the kernel's
+# multicolour LED class.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight", TEST=="/sys/class/leds/%k/multi_intensity", RUN+="/bin/chgrp video /sys/class/leds/%k/multi_intensity", RUN+="/bin/chmod g+w /sys/class/leds/%k/multi_intensity"
+
+# Fans are NOT here, on purpose.
+#
+# It would be one more line to hand the video group write access to every hwmon
+# `pwmN`, and RavenControls will not ship it. Writing `pwmN_enable=1` turns off
+# the firmware's thermal management, and from that moment the fan sits wherever
+# it was last told to until something puts it back. A settings window is not a
+# safe owner of that: close it, kill it, upgrade it, and the fan stays where it
+# was with nothing left running to notice.
+#
+# raven-controlsd is the answer. It outlives the window, runs the curve, and
+# hands every channel back to firmware on exit, on a signal, on a panic, and on
+# a watchdog trip. Fan control needs it; the keyboard light above does not.

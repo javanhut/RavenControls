@@ -1,0 +1,51 @@
+# RavenControls' build interface for imlazy. Mirrors the Makefile.
+
+[settings]
+default = "build"
+
+[commands.build]
+desc = "Build the window and the daemon, optimised"
+run = ["cargo build --locked --workspace --release"]
+alias = ["b"]
+
+[commands.run]
+desc = "Open the window"
+run = ["cargo run --release -p raven-controls"]
+
+[commands.probe]
+desc = "Print what this machine exposes, and why it does not expose the rest"
+run = ["cargo run -q --release -p raven-controls -- --probe"]
+alias = ["p"]
+
+[commands.daemon]
+desc = "Run raven-controlsd in the foreground (sudo)"
+run = ["cargo build --locked --workspace --release", "sudo ./target/release/raven-controlsd"]
+
+[commands.capture]
+desc = "Save this machine's sysfs as a test fixture in ./machine"
+run = ["cargo run -q --release -p raven-controls -- --capture ./machine"]
+
+[commands.fixtures]
+desc = "Rebuild the captured machines the tests run against"
+run = ["./scripts/make-fixtures.sh"]
+
+[commands.test]
+desc = "Run the tests, including the ten captured machines"
+run = ["cargo test --locked --workspace"]
+alias = ["t"]
+
+[commands.check]
+desc = "fmt, clippy and tests"
+run = [
+    "cargo fmt --check",
+    "cargo clippy --locked --workspace --all-targets -- -D warnings",
+    "cargo test --locked --workspace",
+]
+
+[commands.install]
+desc = "Install to /usr/local (sudo)"
+run = ["make install"]
+
+[commands.uninstall]
+desc = "Remove the installed copy"
+run = ["make uninstall"]
