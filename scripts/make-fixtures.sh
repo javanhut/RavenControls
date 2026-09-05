@@ -233,5 +233,35 @@ put "$m/sys/firmware/acpi/platform_profile" balanced
 put "$m/sys/firmware/acpi/platform_profile_choices" "quiet balanced performance"
 put "$m/proc/modules" "asus_nb_wmi 20480 0 - Live 0x0000000000000000"
 
+# ---------------------------------------------------------------------------
+# 11. asus_wmi's hwmon: pwmN_enable with no pwmN.
+#
+#     Captured from the Zephyrus above after `modprobe asus_nb_wmi`. The driver
+#     can hand each fan between firmware and full speed but cannot set a duty,
+#     so there are two enables and no duty attribute anywhere -- a shape that
+#     looking only for `pwmN` walks straight past, and that no other fixture
+#     here has.
+# ---------------------------------------------------------------------------
+m="$fixtures/asus-enable-only"
+dmi "$m" "ASUSTeK COMPUTER INC." "Zephyrus G GU502DU_GA502DU" "6.17.11-raven"
+put "$m/sys/class/leds/asus::kbd_backlight/brightness" 0
+put "$m/sys/class/leds/asus::kbd_backlight/max_brightness" 3
+put "$m/sys/class/hwmon/hwmon4/name" asus
+put "$m/sys/class/hwmon/hwmon4/fan1_input" 2300
+put "$m/sys/class/hwmon/hwmon4/fan1_label" cpu_fan
+put "$m/sys/class/hwmon/hwmon4/fan2_input" 2000
+put "$m/sys/class/hwmon/hwmon4/fan2_label" gpu_fan
+put "$m/sys/class/hwmon/hwmon4/pwm1_enable" 2
+put "$m/sys/class/hwmon/hwmon4/pwm2_enable" 0
+put "$m/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy" 2
+# The 6.14+ class layout and its compatibility alias, both present, as they are
+# on the real machine.
+put "$m/sys/class/platform-profile/platform-profile-0/name" asus-wmi
+put "$m/sys/class/platform-profile/platform-profile-0/profile" quiet
+put "$m/sys/class/platform-profile/platform-profile-0/choices" "quiet balanced performance"
+put "$m/sys/firmware/acpi/platform_profile" quiet
+put "$m/sys/firmware/acpi/platform_profile_choices" "quiet balanced performance"
+put "$m/proc/modules" "asus_nb_wmi 28672 0 - Live 0x0000000000000000"
+
 echo "fixtures written to $fixtures"
 ls "$fixtures"

@@ -35,7 +35,10 @@ const CANDIDATES: &[Candidate] = &[
     Candidate {
         module: "asus_nb_wmi",
         vendor: "asus",
-        gives: "platform profile, throttle policy, fan boost",
+        // Which of these a given model actually publishes varies -- this
+        // Zephyrus got the first two and per-fan modes, but no fan_boost_mode.
+        // The wording promises the driver, not a fixed set of files.
+        gives: "platform profile, throttle policy and fan modes",
         config: "CONFIG_ASUS_NB_WMI",
     },
     Candidate {

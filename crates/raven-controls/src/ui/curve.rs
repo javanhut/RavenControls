@@ -208,6 +208,18 @@ fn nearest(points: &[Point], w: f64, h: f64, x: f64, y: f64) -> Option<usize> {
 
 // ---- drawing --------------------------------------------------------------
 
+/// The configured accent as an `RGBA`, falling back to Raven's own blue.
+fn accent_colour() -> gdk::RGBA {
+    let appearance = crate::config::appearance();
+    let hex = if crate::config::is_hex(&appearance.accent) {
+        appearance.accent
+    } else {
+        crate::config::DEFAULT_ACCENT.to_string()
+    };
+    let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f32 / 255.0;
+    gdk::RGBA::new(channel(1), channel(3), channel(5), 1.0)
+}
+
 fn draw(
     area: &gtk::DrawingArea,
     cr: &gtk::cairo::Context,
@@ -219,11 +231,10 @@ fn draw(
     // Colours come from the theme rather than being hard-coded, so the graph
     // is legible in both light and dark without a second palette.
     let fg = area.color();
-    // The platform accent, without the deprecated style context: a colour
-    // fetched from the widget tree via a CSS provider would be the "correct"
-    // route and is a great deal of machinery for one line. libadwaita's own
-    // default blue is what the platform draws with when nothing overrides it.
-    let accent = gdk::RGBA::new(0.21, 0.52, 0.89, 1.0);
+    // The desktop's accent, from the same `desktop.toml` the rest of the
+    // window is themed from -- so the curve is drawn in whatever colour Raven
+    // Settings is set to, rather than a blue of its own.
+    let accent = accent_colour();
 
     let (x0, y0, pw, ph) = inset(w, h);
 
@@ -399,6 +410,7 @@ pub fn present(
         )
         .build();
     let frame = gtk::Frame::builder().child(&editor.widget).build();
+    frame.add_css_class("curve-frame");
     graph_group.add(&frame);
     page.add(&graph_group);
 

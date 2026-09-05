@@ -1,17 +1,23 @@
 //! The window.
 //!
-//! There is no ASUS page and no ThinkPad page. There is one page whose rows are
-//! built from `Domain`: a percentage becomes a slider, ordered steps and named
-//! modes become a dropdown, a switch becomes a switch, a colour becomes a
-//! colour button. A machine with four fans and an RGB keyboard and a machine
-//! with one two-level light and nothing else run the same code and get windows
-//! that fit them.
+//! There is no ASUS page and no ThinkPad page. Rows are built from `Domain`: a
+//! percentage becomes a slider, ordered steps and named modes become a
+//! dropdown, a switch becomes a switch, a colour becomes a colour button. A
+//! machine with four fans and an RGB keyboard and a machine with one two-level
+//! light and nothing else run the same code and get windows that fit them.
 //!
-//! Rows are rebuilt only when the *set* of controls changes -- a module loading
-//! or a GPU waking up -- and their values are refreshed in place every two
-//! seconds otherwise, so a slider does not jump out from under a finger.
+//! The shell is Raven's -- the glass window, sidebar and cards from Settings,
+//! Store and Power, drawn by `theme.rs`. The *sections* in that sidebar are
+//! discovered like everything else: a desktop with no keyboard light does not
+//! get a Keyboard entry, and a laptop with no fan interface gets a Fans page
+//! that explains itself instead of an empty one.
+//!
+//! Rows are rebuilt only when the set of controls changes -- a module loading,
+//! a GPU waking up -- and their values refreshed in place every two seconds
+//! otherwise, so a slider does not jump out from under a finger.
 
 pub mod curve;
+pub mod theme;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -26,12 +32,14 @@ use libadwaita as adw;
 use raven_hw::model::{percent_to_raw, raw_to_percent, Domain, Knob, Role, Setting};
 
 use crate::client::{Client, Snapshot, Via};
+use crate::config;
 
 const APP_ID: &str = "com.ravencontrols.Raven";
 const REFRESH: Duration = Duration::from_secs(2);
 
 pub fn run() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| theme::load_base());
     app.connect_activate(build);
     // The window takes no arguments; without this GTK treats `--probe` as a
     // file to open and exits.
@@ -58,12 +66,24 @@ enum RowWidget {
     },
 }
 
+/// One entry in the sidebar, and the page it shows.
+struct Section {
+    id: &'static str,
+    title: &'static str,
+    icon: &'static str,
+    /// The scrolled window in the stack, kept so a rebuild can remove it.
+    page: gtk::Widget,
+}
+
 struct Window {
     client: Client,
+    window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
     banner: adw::Banner,
-    page: adw::PreferencesPage,
-    groups: RefCell<Vec<adw::PreferencesGroup>>,
+    stack: gtk::Stack,
+    nav: gtk::ListBox,
+    /// The sections currently in the sidebar, in display order.
+    sections: RefCell<Vec<Section>>,
     rows: RefCell<HashMap<String, RowWidget>>,
     readings: RefCell<HashMap<String, adw::ActionRow>>,
     fan_subtitles: RefCell<HashMap<String, adw::ActionRow>>,
@@ -77,40 +97,68 @@ struct Window {
     sent: RefCell<HashMap<String, Setting>>,
     live: RefCell<Option<Rc<curve::CurveEditor>>>,
     live_sensor: RefCell<Option<String>>,
+    /// The appearance last applied, so a change in Raven Settings is noticed
+    /// without restarting.
+    appearance: RefCell<config::Appearance>,
 }
 
 fn build(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Controls")
-        .default_width(680)
-        .default_height(760)
+        .default_width(940)
+        .default_height(720)
+        .build();
+    window.add_css_class("raven");
+
+    let appearance = config::appearance();
+    theme::apply(&window, &appearance);
+
+    // ---- sidebar --------------------------------------------------------
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    sidebar.add_css_class("sidebar");
+    sidebar.set_size_request(214, -1);
+    sidebar.append(&brand());
+
+    let nav = gtk::ListBox::new();
+    nav.add_css_class("navigation-sidebar");
+    nav.set_selection_mode(gtk::SelectionMode::Single);
+    nav.set_vexpand(true);
+    sidebar.append(&nav);
+
+    let stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .hexpand(true)
+        .vexpand(true)
         .build();
 
-    let page = adw::PreferencesPage::new();
+    let split = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    split.append(&sidebar);
+    split.append(&stack);
+
     let banner = adw::Banner::new("");
     banner.set_revealed(false);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&banner);
-    content.append(&page);
-    page.set_vexpand(true);
+    content.append(&split);
 
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&content));
 
     let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar.add_top_bar(&header);
+    toolbar.add_top_bar(&adw::HeaderBar::new());
     toolbar.set_content(Some(&toasts));
     window.set_content(Some(&toolbar));
 
     let ui = Rc::new(Window {
         client: Client::new(),
+        window: window.clone(),
         toasts,
         banner,
-        page,
-        groups: RefCell::new(Vec::new()),
+        stack: stack.clone(),
+        nav: nav.clone(),
+        sections: RefCell::new(Vec::new()),
         rows: RefCell::new(HashMap::new()),
         readings: RefCell::new(HashMap::new()),
         fan_subtitles: RefCell::new(HashMap::new()),
@@ -119,7 +167,19 @@ fn build(app: &adw::Application) {
         sent: RefCell::new(HashMap::new()),
         live: RefCell::new(None),
         live_sensor: RefCell::new(None),
+        appearance: RefCell::new(appearance),
     });
+
+    {
+        let ui = ui.clone();
+        nav.connect_row_selected(move |_, row| {
+            let Some(row) = row else { return };
+            let index = row.index() as usize;
+            if let Some(section) = ui.sections.borrow().get(index) {
+                ui.stack.set_visible_child_name(section.id);
+            }
+        });
+    }
 
     ui.refresh();
     {
@@ -133,6 +193,36 @@ fn build(app: &adw::Application) {
     window.present();
 }
 
+/// The application's mark at the top of the sidebar.
+fn brand() -> gtk::Box {
+    let brand = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    brand.add_css_class("brand");
+
+    // The installed icon when it is installed, and a stock symbolic when this
+    // is a `cargo run` from a checkout -- rather than the broken-image glyph.
+    let installed = gtk::gdk::Display::default()
+        .map(|d| gtk::IconTheme::for_display(&d).has_icon(APP_ID))
+        .unwrap_or(false);
+    let icon = gtk::Image::from_icon_name(if installed {
+        APP_ID
+    } else {
+        "weather-windy-symbolic"
+    });
+    brand.append(&icon);
+
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let title = gtk::Label::new(Some("Controls"));
+    title.add_css_class("app-title");
+    title.set_xalign(0.0);
+    let subtitle = gtk::Label::new(Some("Backlight and cooling"));
+    subtitle.add_css_class("app-subtitle");
+    subtitle.set_xalign(0.0);
+    text.append(&title);
+    text.append(&subtitle);
+    brand.append(&text);
+    brand
+}
+
 impl Window {
     fn toast(&self, message: &str) {
         // Long enough to read a modprobe line off, which is the longest thing
@@ -142,6 +232,16 @@ impl Window {
     }
 
     fn refresh(self: &Rc<Self>) {
+        // The accent and the glass switch live in Raven Settings, in a file
+        // this application only reads. Checking it on the refresh tick is what
+        // makes changing the theme there change this window without a restart,
+        // and it is one small `read_to_string` every two seconds.
+        let appearance = config::appearance();
+        if appearance != *self.appearance.borrow() {
+            theme::apply(&self.window, &appearance);
+            *self.appearance.borrow_mut() = appearance;
+        }
+
         let snapshot = self.client.snapshot();
         let signature = signature(&snapshot);
         if signature != *self.signature.borrow() {
@@ -168,9 +268,14 @@ impl Window {
     // ---- construction -----------------------------------------------------
 
     fn rebuild(self: &Rc<Self>, snapshot: &Snapshot) {
-        for group in self.groups.borrow_mut().drain(..) {
-            self.page.remove(&group);
+        // What page was open, so a rebuild -- a module loading, a GPU waking --
+        // does not throw the reader back to the first section.
+        let showing = self.stack.visible_child_name().map(|s| s.to_string());
+
+        for section in self.sections.borrow_mut().drain(..) {
+            self.stack.remove(&section.page);
         }
+        self.nav.remove_all();
         self.rows.borrow_mut().clear();
         self.readings.borrow_mut().clear();
         self.fan_subtitles.borrow_mut().clear();
@@ -178,39 +283,94 @@ impl Window {
 
         self.add_keyboard(snapshot);
         self.add_fans(snapshot);
-        self.add_thermal(snapshot);
         self.add_sensors(snapshot);
-        self.add_machine(snapshot);
+        self.add_about(snapshot);
+
+        // Sidebar rows, in the order the sections were added.
+        for section in self.sections.borrow().iter() {
+            self.nav.append(&nav_row(section));
+        }
+
+        let index = showing
+            .and_then(|name| self.sections.borrow().iter().position(|s| s.id == name))
+            .unwrap_or(0);
+        if let Some(row) = self.nav.row_at_index(index as i32) {
+            self.nav.select_row(Some(&row));
+        }
     }
 
-    fn group(self: &Rc<Self>, title: &str, description: Option<&str>) -> adw::PreferencesGroup {
+    /// Add a section, and return the box its cards go in.
+    ///
+    /// Sections are added only when there is something to say in them, which is
+    /// how a desktop avoids a Keyboard entry and a machine with no sensors
+    /// avoids a Sensors one.
+    fn section(
+        self: &Rc<Self>,
+        id: &'static str,
+        title: &'static str,
+        icon: &'static str,
+        subtitle: &str,
+    ) -> gtk::Box {
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        page.add_css_class("page");
+
+        let heading = gtk::Label::new(Some(title));
+        heading.add_css_class("page-title");
+        heading.set_xalign(0.0);
+        page.append(&heading);
+        if !subtitle.is_empty() {
+            let sub = gtk::Label::new(Some(subtitle));
+            sub.add_css_class("page-subtitle");
+            sub.set_xalign(0.0);
+            sub.set_wrap(true);
+            sub.set_max_width_chars(64);
+            page.append(&sub);
+        }
+
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&page)
+            .build();
+        scroll.add_css_class("page-scroll");
+        self.stack.add_named(&scroll, Some(id));
+
+        self.sections.borrow_mut().push(Section {
+            id,
+            title,
+            icon,
+            page: scroll.clone().upcast::<gtk::Widget>(),
+        });
+        page
+    }
+
+    fn group(page: &gtk::Box, title: &str, description: Option<&str>) -> adw::PreferencesGroup {
         let mut builder = adw::PreferencesGroup::builder().title(title);
         if let Some(description) = description {
             builder = builder.description(description);
         }
         let group = builder.build();
-        self.page.add(&group);
-        self.groups.borrow_mut().push(group.clone());
+        page.append(&group);
         group
     }
 
     fn add_keyboard(self: &Rc<Self>, snapshot: &Snapshot) {
         let knobs = snapshot.knobs_for(Role::KeyboardBacklight);
         if knobs.is_empty() {
-            // Nothing is worse here than an empty "Keyboard backlight" heading
-            // on a desktop, so say what was looked for and move on.
-            let group = self.group(
-                "Keyboard backlight",
-                Some(
-                    "No keyboard backlight on this machine. RavenControls looks for an LED \
-                     whose kernel name ends in ::kbd_backlight, which is how every driver \
-                     that has one publishes it.",
-                ),
-            );
-            let _ = group;
+            // A desktop has no keyboard light and does not want a page saying
+            // so; a laptop whose light was not found does. Both are covered by
+            // only adding the section when there is a backlight -- the machine
+            // that has one and hides it is diagnosed on the Fans page, which is
+            // where the module advice already lives.
             return;
         }
-        let group = self.group("Keyboard backlight", None);
+        let page = self.section(
+            "keyboard",
+            "Keyboard",
+            "input-keyboard-symbolic",
+            "Found through the kernel LED class, which is how every driver with \
+             a keyboard light publishes one.",
+        );
+        let group = Self::group(&page, "Backlight", None);
         for knob in knobs {
             self.add_knob_row(&group, knob);
         }
@@ -219,42 +379,81 @@ impl Window {
     fn add_fans(self: &Rc<Self>, snapshot: &Snapshot) {
         let duties = snapshot.knobs_for(Role::FanDuty);
         let modes = snapshot.knobs_for(Role::FanControlMode);
-        if duties.is_empty() && modes.is_empty() {
-            return;
-        }
-        let group = self.group(
-            "Fans",
-            Some("Duty cycles the kernel exposes through hwmon."),
-        );
-        for knob in &duties {
-            let row = self.add_knob_row(&group, knob);
-            // A curve needs a temperature to follow, and a daemon to run it.
-            if snapshot.via == Via::Daemon && !snapshot.temperatures().is_empty() {
-                self.attach_curve_button(&row, knob, snapshot);
-            }
-            self.fan_subtitles
-                .borrow_mut()
-                .insert(knob.id.clone(), row.clone());
-        }
-        for knob in modes {
-            self.add_knob_row(&group, knob);
-        }
-    }
+        let thermal = snapshot.knobs_for(Role::ThermalProfile);
+        let nothing = duties.is_empty() && modes.is_empty() && thermal.is_empty();
 
-    fn add_thermal(self: &Rc<Self>, snapshot: &Snapshot) {
-        let knobs = snapshot.knobs_for(Role::ThermalProfile);
-        if knobs.is_empty() {
-            return;
-        }
-        let group = self.group(
-            "Thermal profile",
-            Some(
-                "Firmware-managed modes. Coarser than a fan curve, and available on many \
-                 laptops that expose nothing finer.",
-            ),
+        // Unlike the keyboard, an absent fan interface is worth a page: it is
+        // where the diagnosis goes, and "there is nothing here and this is why"
+        // is the most useful thing this application can say on such a machine.
+        let page = self.section(
+            "fans",
+            "Fans",
+            "weather-windy-symbolic",
+            if nothing {
+                "Nothing on this machine exposes a fan the kernel can drive."
+            } else {
+                "Duty cycles through hwmon, and the coarser modes firmware offers."
+            },
         );
-        for knob in knobs {
-            self.add_knob_row(&group, knob);
+
+        if !duties.is_empty() || !modes.is_empty() {
+            let group = Self::group(&page, "Fan control", None);
+            for knob in &duties {
+                let row = self.add_knob_row(&group, knob);
+                // A curve needs a temperature to follow, and a daemon to run it.
+                if snapshot.via == Via::Daemon && !snapshot.temperatures().is_empty() {
+                    self.attach_curve_button(&row, knob, snapshot);
+                }
+                self.fan_subtitles
+                    .borrow_mut()
+                    .insert(knob.id.clone(), row.clone());
+            }
+            for knob in modes {
+                self.add_knob_row(&group, knob);
+            }
+        }
+
+        if !thermal.is_empty() {
+            let group = Self::group(
+                &page,
+                "Thermal profile",
+                Some(
+                    "Firmware-managed modes. Coarser than a fan curve, and available on many \
+                     laptops that expose nothing finer.",
+                ),
+            );
+            for knob in thermal {
+                self.add_knob_row(&group, knob);
+            }
+        }
+
+        if nothing && !snapshot.diagnosis.is_empty() {
+            let group = Self::group(
+                &page,
+                "What would give this machine fan control",
+                Some(
+                    "Read from the module list and the kernel's own configuration, so a \
+                     driver that was never compiled is not suggested as though it were.",
+                ),
+            );
+            for line in &snapshot.diagnosis {
+                let (title, body) = match line.split_once('\n') {
+                    Some((title, body)) => (title, body.trim().to_string()),
+                    None => (line.as_str(), String::new()),
+                };
+                let row = adw::ActionRow::builder().title(title).build();
+                row.set_title_lines(0);
+                if !body.is_empty() {
+                    // The command to type, in the font you would type it in.
+                    let command = gtk::Label::new(Some(&body));
+                    command.add_css_class("mono");
+                    command.add_css_class("dim-label");
+                    command.set_valign(gtk::Align::Center);
+                    command.set_selectable(true);
+                    row.add_suffix(&command);
+                }
+                group.add(&row);
+            }
         }
     }
 
@@ -262,7 +461,13 @@ impl Window {
         if snapshot.readings.is_empty() {
             return;
         }
-        let group = self.group("Sensors", None);
+        let page = self.section(
+            "sensors",
+            "Sensors",
+            "utilities-system-monitor-symbolic",
+            "Every fan speed and temperature the kernel publishes for this machine.",
+        );
+        let group = Self::group(&page, "Live readings", None);
         for reading in &snapshot.readings {
             let row = adw::ActionRow::builder()
                 .title(&reading.label)
@@ -274,17 +479,55 @@ impl Window {
         }
     }
 
-    fn add_machine(self: &Rc<Self>, snapshot: &Snapshot) {
-        let group = self.group("This machine", None);
-        let row = adw::ActionRow::builder()
+    fn add_about(self: &Rc<Self>, snapshot: &Snapshot) {
+        let page = self.section(
+            "about",
+            "About",
+            "computer-symbolic",
+            "What RavenControls found, and how it is writing to it.",
+        );
+
+        let group = Self::group(&page, "This machine", None);
+        let machine = adw::ActionRow::builder()
             .title(&snapshot.machine)
             .subtitle(match snapshot.via {
                 Via::Daemon => "Writing through raven-controlsd".to_string(),
                 Via::Sysfs => "Writing straight to sysfs; raven-controlsd is not running".into(),
             })
             .build();
-        row.add_css_class("property");
-        group.add(&row);
+        machine.add_css_class("property");
+        group.add(&machine);
+
+        // Which provider found what. On a machine that behaves oddly this is
+        // the first thing worth seeing, and it saves a trip to the terminal
+        // for `--probe`.
+        let providers = Self::group(
+            &page,
+            "Providers",
+            Some("Generic interfaces first; a vendor path is only reached when the generic one found nothing."),
+        );
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for knob in &snapshot.knobs {
+            match counts.iter_mut().find(|(name, _)| name == &knob.provider) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((knob.provider.clone(), 1)),
+            }
+        }
+        if counts.is_empty() {
+            counts.push(("none".into(), 0));
+        }
+        for (provider, count) in counts {
+            let row = adw::ActionRow::builder()
+                .title(&provider)
+                .subtitle(match count {
+                    0 => "found nothing".to_string(),
+                    1 => "1 control".to_string(),
+                    n => format!("{n} controls"),
+                })
+                .build();
+            row.add_css_class("property");
+            providers.add(&row);
+        }
     }
 
     /// One control, rendered from its domain.
@@ -692,13 +935,10 @@ impl Window {
     }
 
     fn sync_banner(&self, snapshot: &Snapshot) {
-        // The diagnosis first: on a machine with nothing, it is the only useful
-        // thing on the screen.
-        if !snapshot.diagnosis.is_empty() {
-            self.banner.set_title(&snapshot.diagnosis.join("  •  "));
-            self.banner.set_revealed(true);
-            return;
-        }
+        // The diagnosis is a card on the Fans page, not a banner: it is several
+        // lines long, it names commands worth selecting, and a banner is the
+        // wrong shape for both. The banner carries the one thing that is true
+        // of the whole window regardless of which page is open.
         let needs_daemon =
             snapshot.via == Via::Sysfs && snapshot.knobs.iter().any(|k| k.role == Role::FanDuty);
         if needs_daemon {
@@ -732,6 +972,16 @@ impl Window {
     }
 }
 
+/// One sidebar entry.
+fn nav_row(section: &Section) -> gtk::ListBoxRow {
+    let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    box_.append(&gtk::Image::from_icon_name(section.icon));
+    let label = gtk::Label::new(Some(section.title));
+    label.set_xalign(0.0);
+    box_.append(&label);
+    gtk::ListBoxRow::builder().child(&box_).build()
+}
+
 /// Which entries of a multicolour LED's `multi_index` are red, green and blue.
 ///
 /// The kernel does not promise the order, and does not promise those three are
@@ -743,8 +993,8 @@ fn rgb_indices(channels: &[String]) -> Option<(usize, usize, usize)> {
 
 fn read_only_reason(knob: &Knob) -> String {
     format!(
-        "Read-only for this account. {} is owned by root; install the udev rule from the \
-         README, or run raven-controlsd.",
+        "Read-only for this account: {} is owned by root. Run `imlazy install-udev` to let \
+         the video group set it, or start raven-controlsd.",
         knob.origin
     )
 }

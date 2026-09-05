@@ -8,14 +8,17 @@ reverse-engineered blob. Everything here drives interfaces that are documented
 in the Linux kernel tree.
 
 ```
-make            # build the window and the daemon
-make run        # open the window
-make probe      # print what this machine exposes, and why it does not expose the rest
-make test       # 79 tests, ten of them against captured machines nobody here owns
-sudo make install
+imlazy          # build the window and the daemon
+imlazy run      # open the window
+imlazy probe    # what this machine exposes, and why it does not expose the rest
+imlazy test     # 102 tests, eleven of them against captured machines
+imlazy check    # fmt, clippy and the tests -- what has to pass before a commit
+imlazy install  # to /usr/local
 ```
 
-or with imlazy: `imlazy build`, `imlazy run`, `imlazy probe`, `imlazy install`.
+`imlazy list` prints every command, `imlazy -i` picks one interactively. The
+Makefile forwards to the same commands for anyone who types `make` out of
+habit — `lazy.toml` is the one definition, so the two cannot drift.
 
 ## The problem this is built around
 
@@ -44,6 +47,25 @@ Grep the source for a vendor name and you will find them in two places: a table
 of documented sysfs attributes in `fan/vendor.rs`, and a list of kernel modules
 in `diagnose.rs`. Both are **data**. Adding a machine is a row, not a provider,
 and never a UI change.
+
+## The look
+
+The same glass shell as Raven Settings, Store and Power: the shared palette as
+libadwaita named colours, a translucent window for Huginn to blur behind, the
+sidebar, and cards. `src/ui/theme.rs` carries the palette and says which files
+it is in lockstep with.
+
+Appearance comes from `~/.config/desktop.toml` — the file Raven Settings'
+Appearance page writes — so the accent, light/dark and the transparency switch
+follow the desktop rather than being decided here. It is re-read on the refresh
+tick, so changing the accent in Settings recolours this window, the fan-curve
+graph included, without a restart. Only the three fields it acts on are
+modelled, so a key another application adds to that file cannot break the parse.
+
+The **sections in the sidebar are discovered like everything else**: a desktop
+gets no Keyboard entry, a machine with no sensors gets no Sensors entry, and a
+laptop with no fan interface gets a Fans page carrying the diagnosis rather than
+an empty one.
 
 ## How that shape falls out
 
@@ -78,17 +100,33 @@ ten of them and `tests/machines.rs` asserts against each:
 | `multi-handler-profile` | the kernel 6.14 platform-profile layout and its alias |
 | `bare-machine` | nothing found, which is a result and not a failure |
 | `zephyrus-with-module` | what the diagnosis promises, actually delivered |
+| `asus-enable-only` | `pwmN_enable` with no `pwmN` — captured from real hardware |
 
-Two real bugs came out of writing those, both invisible on the machine this was
-developed on: `fan1_input` and `temp1_input` were never matched, so any MacBook
-would have reported no fans; and `pwm1_enable`'s driver-specific automatic modes
-were being flattened onto the generic `2`, which would have stranded most
-desktop boards.
+Three real bugs came out of this, none of them visible on the machine as it
+stood:
+
+- `fan1_input` and `temp1_input` were never matched — only a bare `fanN` would
+  have been — so any MacBook would have reported no fans at all.
+- `pwm1_enable`'s driver-specific automatic modes were flattened onto the
+  generic `2`, which would have stranded most desktop boards on a mode they
+  never used.
+- **`pwmN_enable` with no `pwmN`.** `asus_wmi` can hand each fan between
+  firmware and full speed but cannot set a duty, so it publishes two enables and
+  no duty attribute. The mode knob was only ever built inside the loop over duty
+  channels, so both controls were silently dropped. That one took real hardware:
+  it appeared the moment `asus_nb_wmi` was loaded on the development machine,
+  and it is now `asus-enable-only` in the table above.
+
+That last one also needed a safety decision. "Manual" on a driver with no duty
+attribute means taking the fan off firmware and leaving it wherever the embedded
+controller happened to leave it, with nothing able to move it again — so it is
+kept off the menu, while still being displayed if a driver is already sitting in
+it.
 
 If RavenControls gets your machine wrong:
 
 ```
-raven-controls --capture ~/machine
+imlazy capture capture_dir=~/machine
 ```
 
 That writes the subset of `/sys`, `/proc` and the kernel config it reads — LED
@@ -100,7 +138,7 @@ people who do not own one.
 
 ## When there is nothing to show
 
-`make probe` on the laptop this was written on:
+`imlazy probe` on the laptop this was written on:
 
 ```
 ASUSTeK COMPUTER INC. Zephyrus G GU502DU_GA502DU, Linux 6.17.11-raven
@@ -176,19 +214,20 @@ things right that a plain interpolation gets wrong:
 ## Installing
 
 ```bash
-sudo make install
-make install-udev     # keyboard backlight without root, via the video group
+imlazy install           # both binaries, the desktop entry and the icon
+imlazy install-udev      # keyboard backlight without root, via the video group
+imlazy install-service   # raven-controlsd under raven-init: fan curves, manual speeds
 ```
 
-Fan control additionally needs the daemon:
+Each asks for sudo only on the lines that write outside the build tree, and
+`imlazy uninstall` removes all three — binaries, udev rule and service.
 
-```bash
-sudo cp data/controlsd.toml /etc/raven/init.d/
-sudo raven-rc reload && sudo raven-rc start controlsd
-```
-
-`video` is the group the Raven session already holds for DRM, so neither step
+`video` is the group the Raven session already holds for DRM, so none of this
 adds a group or grants anything a logged-in user did not already have.
+
+On the image, RavenLinux packages this with `[build] system = "cargo"` and an
+explicit `[install] files` list, the same as Raven Settings and Raven Power, so
+the packaging path does not go through either file above.
 
 ## Licence
 

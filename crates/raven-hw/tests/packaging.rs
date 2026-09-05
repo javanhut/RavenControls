@@ -52,3 +52,54 @@ fn the_service_file_starts_the_daemon_that_was_built() {
     // for as long as it stays dead.
     assert!(service.contains("restart = true"), "{service}");
 }
+
+#[test]
+fn every_make_target_is_a_real_imlazy_command() {
+    // The Makefile forwards to imlazy rather than duplicating it, which is only
+    // true for as long as every target it advertises exists in lazy.toml. A
+    // `make install-service` that forwards to a command nobody defined fails
+    // with imlazy's error rather than make's, which is confusing enough to be
+    // worth a test.
+    let makefile = data("../Makefile");
+    let lazy = data("../lazy.toml");
+
+    let commands: Vec<&str> = lazy
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("[commands.")?.strip_suffix(']'))
+        .collect();
+    assert!(!commands.is_empty(), "lazy.toml defines no commands");
+
+    // The .PHONY list, which continues across backslash-escaped newlines.
+    let phony: String = makefile
+        .lines()
+        .skip_while(|l| !l.starts_with(".PHONY:"))
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(".PHONY:", " ")
+        .replace('\\', " ");
+    let targets: Vec<&str> = phony.split_whitespace().collect();
+    assert!(!targets.is_empty(), "the Makefile declares no .PHONY targets");
+
+    for target in targets {
+        assert!(
+            commands.contains(&target),
+            "make target {target:?} has no [commands.{target}] in lazy.toml"
+        );
+    }
+}
+
+#[test]
+fn the_makefile_does_not_reimplement_anything() {
+    // The moment a recipe here runs cargo or install directly, the two files
+    // can disagree about what "install" means -- which is the drift this
+    // arrangement exists to prevent.
+    let makefile = data("../Makefile");
+    for line in makefile.lines().filter(|l| l.starts_with('\t')) {
+        let line = line.trim_start_matches(['\t', '@']);
+        assert!(
+            !line.starts_with("cargo ") && !line.starts_with("install "),
+            "the Makefile is doing work instead of forwarding:\n  {line}"
+        );
+    }
+}

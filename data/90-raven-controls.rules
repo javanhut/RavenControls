@@ -1,6 +1,10 @@
 # Let the session set the keyboard backlight and read the fans without root.
 #
-#   sudo install -Dm644 90-raven-controls.rules /etc/udev/rules.d/90-raven-controls.rules
+#   imlazy install-udev
+#
+# which installs this file and applies it. By hand:
+#
+#   sudo install -Dm644 data/90-raven-controls.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload && sudo udevadm trigger -s leds
 #
 # `video` is the group the Raven session already holds for DRM, so this grants

@@ -398,3 +398,102 @@ fn a_value_that_does_not_fit_the_hardware_is_refused_before_any_write() {
         "{err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The shape real hardware turned up that no hand-written fixture had.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_driver_with_enables_and_no_duties_still_gets_fan_controls() {
+    // asus_wmi, captured from this Zephyrus once asus_nb_wmi was loaded: two
+    // `pwmN_enable` attributes, two fan speeds, and no `pwmN` anywhere. Looking
+    // only for the duty attribute found nothing and silently dropped two
+    // working controls -- which is precisely the failure this project exists to
+    // not have on somebody else's laptop.
+    let hw = machine("asus-enable-only");
+
+    assert!(
+        hw.knobs_for(Role::FanDuty).is_empty(),
+        "this driver has no duty attribute to offer"
+    );
+
+    let modes = hw.knobs_for(Role::FanControlMode);
+    assert_eq!(modes.len(), 2, "{modes:#?}");
+
+    // Named for the fan, not for the PWM channel, since with no duty row beside
+    // it this *is* the control.
+    let cpu = modes
+        .iter()
+        .find(|k| k.label.starts_with("cpu_fan"))
+        .unwrap();
+    assert_eq!(cpu.id, "hwmon/asus/pwm1_enable");
+    assert_eq!(
+        cpu.value,
+        Setting::Mode {
+            name: "Automatic".into()
+        }
+    );
+    assert!(modes.iter().any(|k| k.label.starts_with("gpu_fan")));
+
+    // And the second fan is sitting at 0, which the ABI calls full speed.
+    let gpu = modes
+        .iter()
+        .find(|k| k.id == "hwmon/asus/pwm2_enable")
+        .unwrap();
+    assert_eq!(
+        gpu.value,
+        Setting::Mode {
+            name: "Full speed".into()
+        }
+    );
+}
+
+#[test]
+fn manual_is_kept_off_the_menu_when_there_is_no_duty_to_set() {
+    // Manual on a driver with no `pwmN` means "off firmware, stuck at whatever
+    // the embedded controller left behind, unchangeable". It must not be
+    // reachable from the window.
+    let hw = machine("asus-enable-only");
+    for knob in hw.knobs_for(Role::FanControlMode) {
+        let Domain::Modes { options } = &knob.domain else {
+            panic!("{:?}", knob.domain)
+        };
+        assert!(
+            !options.contains(&"Manual".to_string()),
+            "{} offers Manual with no duty attribute: {options:?}",
+            knob.id
+        );
+        assert!(options.contains(&"Automatic".to_string()), "{options:?}");
+    }
+}
+
+#[test]
+fn the_fan_speeds_are_read_even_though_nothing_can_be_written() {
+    let hw = machine("asus-enable-only");
+    let rpm: Vec<f64> = hw
+        .readings()
+        .iter()
+        .filter(|r| r.unit == raven_hw::Unit::Rpm)
+        .map(|r| r.value)
+        .collect();
+    assert_eq!(rpm, vec![2300.0, 2000.0]);
+}
+
+#[test]
+fn the_real_zephyrus_shows_one_platform_profile_not_two() {
+    // The live machine has both the 6.14 class layout and the legacy alias.
+    // Counting them twice would put two identical dropdowns in the window.
+    let hw = machine("asus-enable-only");
+    let profiles: Vec<_> = hw
+        .knobs_for(Role::ThermalProfile)
+        .into_iter()
+        .filter(|k| k.provider == "platform-profile")
+        .collect();
+    assert_eq!(profiles.len(), 1, "{profiles:#?}");
+    assert_eq!(
+        profiles[0].value,
+        Setting::Mode {
+            name: "Quiet".into()
+        }
+    );
+}

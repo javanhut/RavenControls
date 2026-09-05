@@ -1,51 +1,143 @@
-# RavenControls' build interface for imlazy. Mirrors the Makefile.
+# RavenControls' build and installation interface for ImLazy.
+#
+# This file is the interface, not a mirror of one. Everything is defined here
+# and nothing shells out to make -- the Makefile beside it is a thin forwarder
+# for muscle memory, so there is one definition of "install" and no pair of
+# files to keep in step.
+#
+#   imlazy            build both binaries
+#   imlazy run        open the window
+#   imlazy probe      what this machine exposes, and why it does not expose the rest
+#   imlazy check      fmt, clippy and the tests
+#   imlazy install    to /usr/local (needs sudo for the write)
+#
+# `imlazy -i` picks a command interactively; `imlazy list` prints them all.
 
 [settings]
 default = "build"
 
+[variables]
+app_id = "com.ravencontrols.Raven"
+binary = "raven-controls"
+daemon = "raven-controlsd"
+prefix = "/usr/local"
+bindir = "{{prefix}}/bin"
+datadir = "{{prefix}}/share"
+icondir = "{{datadir}}/icons/hicolor/scalable/apps"
+target = "target/release"
+# Where `imlazy capture` writes. Override per-run:
+#   imlazy capture capture_dir=~/thinkpad-t14
+capture_dir = "./machine"
+
+[commands]
+
 [commands.build]
 desc = "Build the window and the daemon, optimised"
-run = ["cargo build --locked --workspace --release"]
 alias = ["b"]
+run = ["cargo build --locked --workspace --release"]
+watch = ["crates/**/*.rs", "Cargo.toml", "crates/**/Cargo.toml"]
 
 [commands.run]
 desc = "Open the window"
+alias = ["r"]
 run = ["cargo run --release -p raven-controls"]
 
 [commands.probe]
 desc = "Print what this machine exposes, and why it does not expose the rest"
-run = ["cargo run -q --release -p raven-controls -- --probe"]
 alias = ["p"]
+run = ["cargo run -q --release -p raven-controls -- --probe"]
 
 [commands.daemon]
-desc = "Run raven-controlsd in the foreground (sudo)"
-run = ["cargo build --locked --workspace --release", "sudo ./target/release/raven-controlsd"]
+desc = "Run raven-controlsd in the foreground, as root, to watch what it does"
+dep = ["build"]
+run = ["sudo {{target}}/{{daemon}}"]
 
 [commands.capture]
-desc = "Save this machine's sysfs as a test fixture in ./machine"
-run = ["cargo run -q --release -p raven-controls -- --capture ./machine"]
+desc = "Save this machine's sysfs as a test fixture (capture_dir=... to choose where)"
+run = ["cargo run -q --release -p raven-controls -- --capture {{capture_dir}}"]
 
 [commands.fixtures]
 desc = "Rebuild the captured machines the tests run against"
 run = ["./scripts/make-fixtures.sh"]
+if_changed = ["scripts/make-fixtures.sh"]
 
 [commands.test]
 desc = "Run the tests, including the ten captured machines"
-run = ["cargo test --locked --workspace"]
 alias = ["t"]
+run = ["cargo test --locked --workspace"]
+watch = ["crates/**/*.rs"]
 
 [commands.check]
-desc = "fmt, clippy and tests"
+desc = "fmt, clippy and the tests -- what has to pass before a commit"
 run = [
-    "cargo fmt --check",
-    "cargo clippy --locked --workspace --all-targets -- -D warnings",
-    "cargo test --locked --workspace",
+  "cargo fmt --check",
+  "cargo clippy --locked --workspace --all-targets -- -D warnings",
+  "cargo test --locked --workspace",
 ]
 
+[commands.fmt]
+desc = "Format the whole workspace"
+run = ["cargo fmt --all"]
+
+[commands.clean]
+desc = "Clean build artifacts"
+run = ["cargo clean"]
+
+# ---------------------------------------------------------------------------
+# Installation. Three separate commands, because they need different levels of
+# trust and the middle one is the whole safety argument.
+# ---------------------------------------------------------------------------
+
 [commands.install]
-desc = "Install to /usr/local (sudo)"
-run = ["make install"]
+desc = "Install both binaries and the desktop entry to /usr/local (sudo)"
+dep = ["build"]
+run = [
+  "sudo install -Dm755 {{target}}/{{binary}} {{bindir}}/{{binary}}",
+  "sudo install -Dm755 {{target}}/{{daemon}} {{bindir}}/{{daemon}}",
+  "sudo install -Dm644 data/{{app_id}}.desktop {{datadir}}/applications/{{app_id}}.desktop",
+  "sudo install -Dm644 data/icons/hicolor/scalable/apps/{{app_id}}.svg {{icondir}}/{{app_id}}.svg",
+  "sudo install -Dm644 data/90-raven-controls.rules {{datadir}}/{{binary}}/90-raven-controls.rules",
+  "sudo install -Dm644 data/controlsd.toml {{datadir}}/{{binary}}/controlsd.toml",
+  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && sudo update-desktop-database -q {{datadir}}/applications || true'",
+  "sh -c 'command -v gtk-update-icon-cache >/dev/null 2>&1 && sudo gtk-update-icon-cache -qtf {{datadir}}/icons/hicolor || true'",
+]
+post = ["next-steps"]
+
+[commands.next-steps]
+desc = "What is worth doing after an install"
+run = [
+  "printf '\\nInstalled. Two optional steps, and the window says so if you skip them:\\n'",
+  "printf '  imlazy install-udev      keyboard backlight without root\\n'",
+  "printf '  imlazy install-service   fan curves and manual fan speeds\\n\\n'",
+]
+
+[commands.install-udev]
+desc = "Let the video group set the keyboard backlight, without root (sudo)"
+run = [
+  "sudo install -Dm644 data/90-raven-controls.rules /etc/udev/rules.d/90-raven-controls.rules",
+  "sudo udevadm control --reload",
+  "sudo udevadm trigger -s leds",
+]
+
+[commands.install-service]
+desc = "Start raven-controlsd under raven-init, which is what fan control needs (sudo)"
+dep = ["install"]
+run = [
+  "sudo install -Dm644 data/controlsd.toml /etc/raven/init.d/controlsd.toml",
+  "sudo raven-rc reload",
+  "sudo raven-rc start controlsd",
+]
 
 [commands.uninstall]
-desc = "Remove the installed copy"
-run = ["make uninstall"]
+desc = "Remove the installed copy, the udev rule and the service"
+run = [
+  "sh -c 'command -v raven-rc >/dev/null 2>&1 && sudo raven-rc stop controlsd || true'",
+  "sudo rm -f /etc/raven/init.d/controlsd.toml",
+  "sudo rm -f /etc/udev/rules.d/90-raven-controls.rules",
+  "sudo rm -f {{bindir}}/{{binary}}",
+  "sudo rm -f {{bindir}}/{{daemon}}",
+  "sudo rm -f {{datadir}}/applications/{{app_id}}.desktop",
+  "sudo rm -f {{icondir}}/{{app_id}}.svg",
+  "sudo rm -rf {{datadir}}/{{binary}}",
+  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && sudo update-desktop-database -q {{datadir}}/applications || true'",
+]

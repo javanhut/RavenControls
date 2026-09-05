@@ -85,6 +85,28 @@ fn pwm_channels(root: &Root, dir: &str) -> Vec<u32> {
     out
 }
 
+/// Channel numbers that have a `pwmN_enable`.
+///
+/// Not the same set as `pwm_channels`. `asus_wmi` publishes `pwm1_enable` and
+/// `pwm2_enable` with no duty attribute at all -- the driver can hand a fan
+/// between firmware and full speed but cannot set a percentage -- and a laptop
+/// like that has real, writable fan control that looking only for `pwmN` walks
+/// straight past.
+fn enable_channels(root: &Root, dir: &str) -> Vec<u32> {
+    let mut out: Vec<u32> = root
+        .list(dir)
+        .into_iter()
+        .filter_map(|(name, _)| {
+            name.strip_prefix("pwm")?
+                .strip_suffix("_enable")?
+                .parse::<u32>()
+                .ok()
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
 /// Fan and temperature channel numbers, from `fanN_input` and `tempN_input`.
 ///
 /// These have no bare attribute at all -- hwmon spells the measurement
@@ -135,14 +157,30 @@ pub fn enable_value(label: &str) -> Option<u32> {
 
 /// The modes to offer for a channel currently sitting at `current`.
 ///
-/// The kernel publishes no list of the values a driver accepts, so the three
-/// from the ABI are always offered, plus whatever the driver is actually using
-/// if it is something else -- which is how a machine keeps its way back to its
-/// own algorithm instead of being pushed onto a generic one it may not have.
-pub fn enable_modes(current: u32) -> Vec<String> {
-    let mut modes = vec![enable_label(2), enable_label(1), enable_label(0)];
+/// The kernel publishes no list of the values a driver accepts, so the ABI's
+/// own are offered, plus whatever the driver is actually using if it is
+/// something else -- which is how a machine keeps its way back to its own
+/// algorithm instead of being pushed onto a generic one it may not have.
+///
+/// `has_duty` is why this takes an argument. "Manual" means "I will set the
+/// duty myself", and on a driver with no `pwmN` there is no duty to set: the
+/// fan would be taken off firmware control and left at whatever the embedded
+/// controller happened to leave in the register, with nothing able to change
+/// it. Offering that is offering a way to make a laptop worse.
+pub fn enable_modes(current: u32, has_duty: bool) -> Vec<String> {
+    let mut modes = vec![enable_label(2)];
+    if has_duty {
+        modes.push(enable_label(1));
+    }
+    modes.push(enable_label(0));
     if current > 2 {
         modes.insert(0, enable_label(current));
+    }
+    // A driver already sitting in manual with no duty attribute is a state we
+    // cannot offer but must still display, or the row shows the wrong mode as
+    // selected.
+    if current == 1 && !has_duty {
+        modes.insert(0, enable_label(1));
     }
     modes
 }
@@ -162,44 +200,61 @@ impl Provider for Hwmon {
         let mut out = Vec::new();
         for chip in chips(root) {
             let Chip { key, name, dir } = &chip;
-            for n in pwm_channels(root, dir) {
-                let duty_attr = format!("{dir}/pwm{n}");
-                let Some(raw) = root.read_u32(&duty_attr) else {
-                    continue;
-                };
-                let enable_attr = format!("{dir}/pwm{n}_enable");
-                let enable = root.read_u32(&enable_attr);
+            // The union, not the duty channels alone: a driver may publish
+            // either without the other. `asus_wmi` has enables and no duties;
+            // the reverse turns up on drivers with a fixed automatic curve.
+            let duties = pwm_channels(root, dir);
+            let enables = enable_channels(root, dir);
+            let mut channels: Vec<u32> = duties.iter().chain(&enables).copied().collect();
+            channels.sort_unstable();
+            channels.dedup();
 
-                // Prefer the fan's own label over the PWM number: a board that
-                // says "CPU Fan" should not be presented as "pwm1".
-                let label = if input_channels(root, dir, "fan").contains(&n) {
+            let labelled = input_channels(root, dir, "fan");
+            for n in channels {
+                // Prefer the fan's own label over the PWM number: a driver that
+                // says "cpu_fan" should not be presented as "pwm1".
+                let label = if labelled.contains(&n) {
                     format!("{} ({name})", fan_label(root, dir, n))
                 } else {
                     format!("Fan {n} ({name})")
                 };
 
-                out.push(Knob {
-                    id: format!("hwmon/{key}/pwm{n}"),
-                    label: label.clone(),
-                    role: Role::FanDuty,
-                    domain: Domain::Percent {
-                        raw_max: PWM_RAW_MAX,
-                    },
-                    value: Setting::Percent {
-                        percent: raw_to_percent(raw, PWM_RAW_MAX),
-                    },
-                    writable: root.writable(&duty_attr),
-                    provider: "hwmon".into(),
-                    origin: root.path(&duty_attr).display().to_string(),
-                });
+                let duty_attr = format!("{dir}/pwm{n}");
+                let duty = duties
+                    .contains(&n)
+                    .then(|| root.read_u32(&duty_attr))
+                    .flatten();
+                if let Some(raw) = duty {
+                    out.push(Knob {
+                        id: format!("hwmon/{key}/pwm{n}"),
+                        label: label.clone(),
+                        role: Role::FanDuty,
+                        domain: Domain::Percent {
+                            raw_max: PWM_RAW_MAX,
+                        },
+                        value: Setting::Percent {
+                            percent: raw_to_percent(raw, PWM_RAW_MAX),
+                        },
+                        writable: root.writable(&duty_attr),
+                        provider: "hwmon".into(),
+                        origin: root.path(&duty_attr).display().to_string(),
+                    });
+                }
 
-                if let Some(enable) = enable {
+                let enable_attr = format!("{dir}/pwm{n}_enable");
+                if let Some(enable) = root.read_u32(&enable_attr) {
                     out.push(Knob {
                         id: format!("hwmon/{key}/pwm{n}_enable"),
-                        label: format!("{label} control"),
+                        // With no duty knob beside it this row is the whole
+                        // control for that fan, so it is named as one.
+                        label: if duty.is_some() {
+                            format!("{label} control")
+                        } else {
+                            label.clone()
+                        },
                         role: Role::FanControlMode,
                         domain: Domain::Modes {
-                            options: enable_modes(enable),
+                            options: enable_modes(enable, duty.is_some()),
                         },
                         value: Setting::Mode {
                             name: enable_label(enable),
@@ -330,7 +385,7 @@ mod tests {
     fn a_drivers_own_automatic_mode_stays_on_the_menu() {
         // nct6775 sits at 5 (Smart Fan IV). Offering only 0/1/2 would strand a
         // board on a mode it never used.
-        let modes = enable_modes(5);
+        let modes = enable_modes(5, true);
         assert_eq!(modes[0], "Automatic (driver mode 5)");
         assert!(modes.contains(&"Manual".to_string()));
         assert!(modes.contains(&"Automatic".to_string()));
@@ -338,7 +393,27 @@ mod tests {
 
     #[test]
     fn the_ordinary_case_offers_exactly_three() {
-        assert_eq!(enable_modes(2), vec!["Automatic", "Manual", "Full speed"]);
+        assert_eq!(
+            enable_modes(2, true),
+            vec!["Automatic", "Manual", "Full speed"]
+        );
+    }
+
+    #[test]
+    fn manual_is_not_offered_when_there_is_no_duty_to_set() {
+        // asus_wmi's shape, found on the machine this was written on: two
+        // pwmN_enable attributes and no pwmN at all. Manual there takes the fan
+        // off firmware and leaves it wherever the embedded controller had it,
+        // with nothing able to move it again.
+        let modes = enable_modes(2, false);
+        assert_eq!(modes, vec!["Automatic", "Full speed"]);
+    }
+
+    #[test]
+    fn a_driver_already_sitting_in_manual_can_still_show_it() {
+        // We will not offer the move into manual, but a row whose current value
+        // is missing from its own menu displays the wrong mode as selected.
+        assert_eq!(enable_modes(1, false)[0], "Manual");
     }
 
     #[test]

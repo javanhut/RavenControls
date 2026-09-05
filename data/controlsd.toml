@@ -1,6 +1,10 @@
 # raven-controlsd -- the fan and backlight daemon, managed by raven-init.
 #
-#   sudo cp contrib/controlsd.toml /etc/raven/init.d/
+#   imlazy install-service
+#
+# which installs this file, reloads raven-init and starts the daemon. By hand:
+#
+#   sudo install -Dm644 data/controlsd.toml /etc/raven/init.d/controlsd.toml
 #   sudo raven-rc reload && sudo raven-rc start controlsd
 #
 # It creates /run/raven-controls/ctl as root:video 0660 and re-applies whatever

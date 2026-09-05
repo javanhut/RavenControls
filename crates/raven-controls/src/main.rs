@@ -6,6 +6,7 @@
 
 mod capture;
 mod client;
+mod config;
 mod ui;
 
 use gtk::glib;
