@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.ravencontrols.Raven</id>
+  <name>Controls</name>
+  <summary>Keyboard backlight and fan control</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>The keyboard light, fan speeds and thermal profiles of whatever machine Raven Linux is installed on. Controls asks what interfaces the kernel exposes rather than what laptop it is running on, so it works on any machine whose keyboard light or fans have a kernel driver — and says exactly which module would help when they do not.</p>
+    <p>Fan curves are run by raven-controlsd, which hands every fan back to firmware if it stops.</p>
+  </description>
+  <launchable type="desktop-id">com.ravencontrols.Raven.desktop</launchable>
+  <provides>
+    <binary>raven-controls</binary>
+    <binary>raven-controlsd</binary>
+  </provides>
+  <url type="homepage">https://github.com/javanhut/RavenControls</url>
+</component>

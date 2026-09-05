@@ -79,7 +79,10 @@ fn every_make_target_is_a_real_imlazy_command() {
         .replace(".PHONY:", " ")
         .replace('\\', " ");
     let targets: Vec<&str> = phony.split_whitespace().collect();
-    assert!(!targets.is_empty(), "the Makefile declares no .PHONY targets");
+    assert!(
+        !targets.is_empty(),
+        "the Makefile declares no .PHONY targets"
+    );
 
     for target in targets {
         assert!(
@@ -102,4 +105,91 @@ fn the_makefile_does_not_reimplement_anything() {
             "the Makefile is doing work instead of forwarding:\n  {line}"
         );
     }
+}
+
+/// Destination paths an `imlazy` command writes or removes.
+fn paths_in(lazy: &str, command: &str, verb: &str) -> Vec<String> {
+    let block = lazy
+        .split(&format!("[commands.{command}]"))
+        .nth(1)
+        .unwrap_or_else(|| panic!("lazy.toml has no [commands.{command}]"));
+    // Up to the next command.
+    let block = block.split("\n[commands.").next().unwrap_or(block);
+    block
+        .lines()
+        .map(str::trim)
+        // The guarded `sh -c` steps are conditional by design; only the
+        // unconditional file operations are the contract being checked.
+        .filter(|l| !l.contains("sh -c"))
+        .filter_map(|line| {
+            let at = line.find(verb)? + verb.len();
+            // The destination is the last whitespace-separated token before
+            // the closing quote.
+            line[at..]
+                .trim_end_matches(['"', ','])
+                .split_whitespace()
+                .next_back()
+                .map(str::to_string)
+        })
+        .filter(|p| p.starts_with("{{"))
+        .collect()
+}
+
+#[test]
+fn everything_install_writes_is_something_uninstall_removes() {
+    // The failure this prevents is quiet and annoying: a file added to install,
+    // forgotten in uninstall, and left behind on every machine that ever tried
+    // this application. Verified end to end once by hand with
+    //   imlazy install   prefix=/tmp/rc-test sysconfdir=/tmp/rc-test/etc sudo=
+    //   imlazy uninstall prefix=/tmp/rc-test sysconfdir=/tmp/rc-test/etc sudo=
+    // and kept honest from here by this.
+    let lazy = data("../lazy.toml");
+
+    let installed = paths_in(&lazy, "install", "install -Dm644 ");
+    let mut installed = installed;
+    installed.extend(paths_in(&lazy, "install", "install -Dm755 "));
+    assert!(
+        installed.len() >= 8,
+        "only found {} install destinations; the parser has drifted: {installed:#?}",
+        installed.len()
+    );
+
+    let mut removed = paths_in(&lazy, "uninstall", "rm -f ");
+    removed.extend(paths_in(&lazy, "uninstall", "rm -rf "));
+    assert!(!removed.is_empty(), "uninstall removes nothing");
+
+    for dest in &installed {
+        // Either removed outright, or inside a directory that is.
+        let covered = removed
+            .iter()
+            .any(|r| dest == r || dest.starts_with(&format!("{r}/")));
+        assert!(
+            covered,
+            "install writes {dest} and uninstall never removes it\nuninstall covers: {removed:#?}"
+        );
+    }
+}
+
+#[test]
+fn uninstall_stops_the_daemon_before_deleting_its_service_file() {
+    // Order matters here and nowhere else in that command: raven-controlsd
+    // hands every fan back to firmware as it exits, so removing the service
+    // definition out from under a running daemon would skip that and leave the
+    // fans wherever the last curve tick put them.
+    let lazy = data("../lazy.toml");
+    let block = lazy
+        .split("[commands.uninstall]")
+        .nth(1)
+        .unwrap()
+        .split("\n[commands.")
+        .next()
+        .unwrap();
+    let stop = block.find("raven-rc stop controlsd").expect("no stop step");
+    let remove = block
+        .find("rm -f {{sysconfdir}}/raven/init.d/controlsd.toml")
+        .expect("no removal step");
+    assert!(
+        stop < remove,
+        "uninstall deletes the service file before stopping the daemon"
+    );
 }

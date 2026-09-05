@@ -211,23 +211,91 @@ things right that a plain interpolation gets wrong:
   120, and a linear extension would confidently answer 160%. It is flat outside
   its endpoints.
 
-## Installing
+## On a Raven image
+
+RavenControls is built into the image rather than installed onto it. In
+[RavenLinux](../RavenLinux):
+
+| Where | What |
+|---|---|
+| `packages/gui/raven-controls/package.toml` | the package: both binaries, the icon, the metainfo, the udev rule |
+| `scripts/stages/stage-gui.sh` | `stage_controls()` builds `--workspace`, stages both binaries, the udev rule and the icon |
+| `scripts/stages/stage-gui.sh` | `install_desktop_entries()` writes the launcher entry — every entry on the image is decided in that one function |
+| `etc/raven/init.toml` | the `controlsd` service, so raven-init starts the daemon at boot |
+| `configs/raven/services/controlsd.toml` | the same service as a drop-in, for a machine installed before it existed |
+
+`raven-rc` drives it like any other service:
 
 ```bash
-imlazy install           # both binaries, the desktop entry and the icon
-imlazy install-udev      # keyboard backlight without root, via the video group
-imlazy install-service   # raven-controlsd under raven-init: fan curves, manual speeds
+raven-rc status controlsd
+raven-rc restart controlsd
+raven-rc stop controlsd     # every fan goes back to firmware on the way out
 ```
 
-Each asks for sudo only on the lines that write outside the build tree, and
-`imlazy uninstall` removes all three — binaries, udev rule and service.
+`CONTROLS_SKIP=1` builds an image without it. The `controlsd` service stays
+defined in that case and raven-init logs that its binary is missing, the same
+way it treats an absent `raven-powerd`.
+
+### It shares the platform profile with raven-powerd
+
+`raven-powerd` writes `/sys/firmware/acpi/platform_profile` itself, on every
+power-supply change and on a timer, as part of the `[profile]` presets in
+`/etc/raven/power.toml` (`manage = true` by default). Two things writing one
+attribute is exactly the situation where a settings window lies to you: set the
+profile here, and it is undone within seconds with no explanation.
+
+So when `/run/raven-power/profile` exists — raven-powerd's marker for "I am
+managing profiles, and this is the preset I last applied" — that row says who
+owns it and how to take it back:
+
+> raven-powerd is managing this (last applied: balanced) and re-applies it when
+> the power supply changes. A change here will not stick. Hold one preset for
+> the session with `profile <preset>` on /run/raven-power/ctl, or set
+> `manage = false` under `[profile]` in /etc/raven/power.toml.
+
+Only the ACPI platform profile is contested. Vendor throttle policies, hwmon
+channels and the keyboard light are RavenControls' alone.
+
+## Installing by hand
+
+```bash
+imlazy install      # binaries, launcher entry, icon, udev rule, and the service
+imlazy uninstall    # all of it back out, service stopped first
+```
+
+One command each. `install` also installs the udev rule that lets the `video`
+group set the keyboard backlight, and — on a machine with `raven-rc` — the
+`controlsd` service, reloading udev and starting the daemon. On a distribution
+that is not Raven the service step is skipped and it says so.
+
+`uninstall` stops the daemon *before* removing its service file, so
+raven-controlsd hands every fan back to firmware on the way out rather than
+being deleted out from under itself. A test asserts that order, and another
+asserts that every path `install` writes is a path `uninstall` removes.
+
+The pieces are separately callable when the whole is not wanted:
+
+```bash
+imlazy install-udev      # only the keyboard backlight rule
+imlazy install-service   # only the daemon under raven-init
+```
+
+### Packaging, and testing the install itself
+
+Three variables make this stageable and, more usefully, testable:
+
+```bash
+imlazy install prefix=/tmp/root sysconfdir=/tmp/root/etc sudo=
+```
+
+`sudo=` is empty, so it writes as you; `prefix` and `sysconfdir` put everything
+under a temporary root. Nothing reaches outside those two, and the steps that
+touch a *running* system — `udevadm control --reload`, `raven-rc start` — are
+skipped unless `sysconfdir` really is `/etc`, so staging into a temporary root
+cannot reload the init of the machine doing the staging.
 
 `video` is the group the Raven session already holds for DRM, so none of this
 adds a group or grants anything a logged-in user did not already have.
-
-On the image, RavenLinux packages this with `[build] system = "cargo"` and an
-explicit `[install] files` list, the same as Raven Settings and Raven Power, so
-the packaging path does not go through either file above.
 
 ## Licence
 

@@ -205,6 +205,46 @@ pub fn unsafe_without_daemon(knob: &Knob, value: &Setting) -> Option<String> {
     })
 }
 
+/// raven-powerd's marker that it is managing the ACPI platform profile.
+///
+/// `[profile] manage` in `/etc/raven/power.toml` defaults to true, and when it
+/// is on, raven-powerd writes `/sys/firmware/acpi/platform_profile` on every
+/// supply change *and on a timer* -- its `apply` is deliberately idempotent so
+/// it can be called repeatedly without tracking state. It publishes the preset
+/// it last applied here.
+///
+/// That makes a platform-profile control in this window a trap: set it, and it
+/// snaps back within seconds with no explanation. So when this file is present
+/// the row says who owns the setting rather than pretending to.
+pub const POWERD_PROFILE: &str = "/run/raven-power/profile";
+
+/// The preset raven-powerd last applied, when it is managing profiles.
+pub fn powerd_managing_profiles() -> Option<String> {
+    let preset = std::fs::read_to_string(POWERD_PROFILE).ok()?;
+    let preset = preset.trim();
+    (!preset.is_empty()).then(|| preset.to_string())
+}
+
+/// What to say on a platform-profile row that raven-powerd is also driving.
+///
+/// Separate and tested because the useful half is the way out: raven-powerd
+/// takes a session hold on `/run/raven-power/ctl`, so there is an answer better
+/// than "do not use this".
+pub fn contested_by_powerd(knob: &Knob, preset: Option<&str>) -> Option<String> {
+    // Only the ACPI platform profile is contested. A vendor throttle policy or
+    // an hwmon channel is ours alone.
+    if knob.provider != "platform-profile" {
+        return None;
+    }
+    let preset = preset?;
+    Some(format!(
+        "raven-powerd is managing this (last applied: {preset}) and re-applies it when the \
+         power supply changes. A change here will not stick. Hold one preset for the session \
+         with `profile <preset>` on /run/raven-power/ctl, or set manage = false under \
+         [profile] in /etc/raven/power.toml."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +295,46 @@ mod tests {
             },
         )
         .is_none());
+    }
+
+    fn profile_knob(provider: &str) -> Knob {
+        Knob {
+            id: "platform-profile/acpi".into(),
+            label: "Platform profile".into(),
+            role: Role::ThermalProfile,
+            domain: Domain::Modes {
+                options: vec!["Quiet".into(), "Balanced".into()],
+            },
+            value: Setting::Mode {
+                name: "Quiet".into(),
+            },
+            writable: true,
+            provider: provider.into(),
+            origin: "/sys/firmware/acpi/platform_profile".into(),
+        }
+    }
+
+    #[test]
+    fn a_platform_profile_powerd_is_driving_says_so_and_says_how_to_win() {
+        let note = contested_by_powerd(&profile_knob("platform-profile"), Some("power-saver"))
+            .expect("no note");
+        assert!(note.contains("power-saver"), "{note}");
+        // The way out matters more than the warning.
+        assert!(note.contains("/run/raven-power/ctl"), "{note}");
+        assert!(note.contains("manage = false"), "{note}");
+    }
+
+    #[test]
+    fn nothing_else_is_reported_as_contested() {
+        // A vendor throttle policy and an hwmon channel are ours alone --
+        // raven-powerd writes neither.
+        assert!(contested_by_powerd(&profile_knob("vendor"), Some("balanced")).is_none());
+        assert!(contested_by_powerd(&profile_knob("hwmon"), Some("balanced")).is_none());
+    }
+
+    #[test]
+    fn with_no_powerd_managing_profiles_there_is_nothing_to_say() {
+        assert!(contested_by_powerd(&profile_knob("platform-profile"), None).is_none());
     }
 
     #[test]

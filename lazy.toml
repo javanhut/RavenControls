@@ -24,6 +24,21 @@ prefix = "/usr/local"
 bindir = "{{prefix}}/bin"
 datadir = "{{prefix}}/share"
 icondir = "{{datadir}}/icons/hicolor/scalable/apps"
+
+# The udev rule and the init drop-in are policy, not payload, so they go under
+# /etc rather than the prefix. Overriding it stages them somewhere else, which
+# is what a packager wants and what the install test uses.
+sysconfdir = "/etc"
+
+# How the privileged writes are made. `sudo=` -- empty -- writes as the current
+# user, which is what makes
+#
+#   imlazy install prefix=/tmp/root sysconfdir=/tmp/root/etc sudo=
+#
+# a real exercise of these commands rather than a dry run. Nothing here assumes
+# it is non-empty.
+sudo = "sudo"
+
 target = "target/release"
 # Where `imlazy capture` writes. Override per-run:
 #   imlazy capture capture_dir=~/thinkpad-t14
@@ -84,60 +99,85 @@ desc = "Clean build artifacts"
 run = ["cargo clean"]
 
 # ---------------------------------------------------------------------------
-# Installation. Three separate commands, because they need different levels of
-# trust and the middle one is the whole safety argument.
+# Installation.
+#
+# One command does the whole job, because on the machine you are sitting at the
+# answer to "which of these three parts do I want" is always "all of them". The
+# parts are still separately callable for the cases where it is not.
+#
+# Nothing here reaches outside the prefix and sysconfdir, and the one step that
+# touches a running system -- starting the service -- is skipped unless
+# sysconfdir really is /etc. A staged install into a temporary root must not
+# reload the init of the machine doing the staging.
 # ---------------------------------------------------------------------------
 
 [commands.install]
-desc = "Install both binaries and the desktop entry to /usr/local (sudo)"
+desc = "Install everything: binaries, launcher entry, udev rule, and the service"
 dep = ["build"]
 run = [
-  "sudo install -Dm755 {{target}}/{{binary}} {{bindir}}/{{binary}}",
-  "sudo install -Dm755 {{target}}/{{daemon}} {{bindir}}/{{daemon}}",
-  "sudo install -Dm644 data/{{app_id}}.desktop {{datadir}}/applications/{{app_id}}.desktop",
-  "sudo install -Dm644 data/icons/hicolor/scalable/apps/{{app_id}}.svg {{icondir}}/{{app_id}}.svg",
-  "sudo install -Dm644 data/90-raven-controls.rules {{datadir}}/{{binary}}/90-raven-controls.rules",
-  "sudo install -Dm644 data/controlsd.toml {{datadir}}/{{binary}}/controlsd.toml",
-  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && sudo update-desktop-database -q {{datadir}}/applications || true'",
-  "sh -c 'command -v gtk-update-icon-cache >/dev/null 2>&1 && sudo gtk-update-icon-cache -qtf {{datadir}}/icons/hicolor || true'",
+  "{{sudo}} install -Dm755 {{target}}/{{binary}} {{bindir}}/{{binary}}",
+  "{{sudo}} install -Dm755 {{target}}/{{daemon}} {{bindir}}/{{daemon}}",
+  "{{sudo}} install -Dm644 data/{{app_id}}.desktop {{datadir}}/applications/{{app_id}}.desktop",
+  "{{sudo}} install -Dm644 data/icons/hicolor/scalable/apps/{{app_id}}.svg {{icondir}}/{{app_id}}.svg",
+  "{{sudo}} install -Dm644 data/{{app_id}}.metainfo.xml {{datadir}}/metainfo/{{app_id}}.metainfo.xml",
+  "{{sudo}} install -Dm644 data/90-raven-controls.rules {{datadir}}/{{binary}}/90-raven-controls.rules",
+  "{{sudo}} install -Dm644 data/controlsd.toml {{datadir}}/{{binary}}/controlsd.toml",
+  # The keyboard light, without root, for the video group the session already
+  # holds. Grants nothing over the fans -- see the comments in the rule.
+  "{{sudo}} install -Dm644 data/90-raven-controls.rules {{sysconfdir}}/udev/rules.d/90-raven-controls.rules",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v udevadm >/dev/null 2>&1 || exit 0; {{sudo}} udevadm control --reload; {{sudo}} udevadm trigger -s leds'",
+  # The daemon, under raven-init. Skipped whole on a machine with no raven-rc,
+  # which is how this installs on a distribution that is not Raven.
+  "{{sudo}} install -Dm644 data/controlsd.toml {{sysconfdir}}/raven/init.d/controlsd.toml",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v raven-rc >/dev/null 2>&1 || exit 0; {{sudo}} raven-rc reload; {{sudo}} raven-rc start controlsd'",
+  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && {{sudo}} update-desktop-database -q {{datadir}}/applications || true'",
+  "sh -c 'command -v gtk-update-icon-cache >/dev/null 2>&1 && {{sudo}} gtk-update-icon-cache -qtf {{datadir}}/icons/hicolor || true'",
 ]
-post = ["next-steps"]
+post = ["installed"]
 
-[commands.next-steps]
-desc = "What is worth doing after an install"
+[commands.installed]
+desc = "Say what landed and what is now running"
 run = [
-  "printf '\\nInstalled. Two optional steps, and the window says so if you skip them:\\n'",
-  "printf '  imlazy install-udev      keyboard backlight without root\\n'",
-  "printf '  imlazy install-service   fan curves and manual fan speeds\\n\\n'",
+  "printf '\nInstalled to {{prefix}}.\n'",
+  # `A && B || C` would run C whenever B merely failed, which reports "no
+  # raven-rc" on a machine that has one and simply is not running the service.
+  # Three states, told apart properly.
+  "sh -c 'if command -v raven-rc >/dev/null 2>&1; then raven-rc status controlsd 2>/dev/null || printf \"  controlsd is not running yet:  sudo raven-rc start controlsd\\n\"; else printf \"  no raven-rc here, so no service: start the daemon yourself with  sudo {{daemon}}\\n\"; fi'",
+  "printf '  imlazy uninstall  removes all of it, service and udev rule included\n\n'",
 ]
+
+# The pieces, for the cases where the whole is not wanted.
 
 [commands.install-udev]
-desc = "Let the video group set the keyboard backlight, without root (sudo)"
+desc = "Only the udev rule: the keyboard backlight, without root"
 run = [
-  "sudo install -Dm644 data/90-raven-controls.rules /etc/udev/rules.d/90-raven-controls.rules",
-  "sudo udevadm control --reload",
-  "sudo udevadm trigger -s leds",
+  "{{sudo}} install -Dm644 data/90-raven-controls.rules {{sysconfdir}}/udev/rules.d/90-raven-controls.rules",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v udevadm >/dev/null 2>&1 || exit 0; {{sudo}} udevadm control --reload; {{sudo}} udevadm trigger -s leds'",
 ]
 
 [commands.install-service]
-desc = "Start raven-controlsd under raven-init, which is what fan control needs (sudo)"
-dep = ["install"]
+desc = "Only the daemon under raven-init, which is what fan control needs"
 run = [
-  "sudo install -Dm644 data/controlsd.toml /etc/raven/init.d/controlsd.toml",
-  "sudo raven-rc reload",
-  "sudo raven-rc start controlsd",
+  "{{sudo}} install -Dm644 data/controlsd.toml {{sysconfdir}}/raven/init.d/controlsd.toml",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v raven-rc >/dev/null 2>&1 || exit 0; {{sudo}} raven-rc reload; {{sudo}} raven-rc start controlsd'",
 ]
 
 [commands.uninstall]
-desc = "Remove the installed copy, the udev rule and the service"
+desc = "Remove all of it: binaries, launcher entry, udev rule and the service"
 run = [
-  "sh -c 'command -v raven-rc >/dev/null 2>&1 && sudo raven-rc stop controlsd || true'",
-  "sudo rm -f /etc/raven/init.d/controlsd.toml",
-  "sudo rm -f /etc/udev/rules.d/90-raven-controls.rules",
-  "sudo rm -f {{bindir}}/{{binary}}",
-  "sudo rm -f {{bindir}}/{{daemon}}",
-  "sudo rm -f {{datadir}}/applications/{{app_id}}.desktop",
-  "sudo rm -f {{icondir}}/{{app_id}}.svg",
-  "sudo rm -rf {{datadir}}/{{binary}}",
-  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && sudo update-desktop-database -q {{datadir}}/applications || true'",
+  # The service first, and stopped before its file goes: raven-controlsd hands
+  # every fan back to firmware on the way out, and removing the definition
+  # underneath a running daemon would skip that.
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v raven-rc >/dev/null 2>&1 || exit 0; {{sudo}} raven-rc stop controlsd || true'",
+  "{{sudo}} rm -f {{sysconfdir}}/raven/init.d/controlsd.toml",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v raven-rc >/dev/null 2>&1 || exit 0; {{sudo}} raven-rc reload || true'",
+  "{{sudo}} rm -f {{sysconfdir}}/udev/rules.d/90-raven-controls.rules",
+  "sh -c 'test {{sysconfdir}} = /etc || exit 0; command -v udevadm >/dev/null 2>&1 || exit 0; {{sudo}} udevadm control --reload'",
+  "{{sudo}} rm -f {{bindir}}/{{binary}}",
+  "{{sudo}} rm -f {{bindir}}/{{daemon}}",
+  "{{sudo}} rm -f {{datadir}}/applications/{{app_id}}.desktop",
+  "{{sudo}} rm -f {{icondir}}/{{app_id}}.svg",
+  "{{sudo}} rm -f {{datadir}}/metainfo/{{app_id}}.metainfo.xml",
+  "{{sudo}} rm -rf {{datadir}}/{{binary}}",
+  "sh -c 'command -v update-desktop-database >/dev/null 2>&1 && {{sudo}} update-desktop-database -q {{datadir}}/applications || true'",
 ]

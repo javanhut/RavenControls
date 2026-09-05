@@ -422,8 +422,16 @@ impl Window {
                      laptops that expose nothing finer.",
                 ),
             );
+            // raven-powerd writes the ACPI platform profile itself, on a timer
+            // and on every supply change. Where it is doing that, a change here
+            // is undone within seconds, and a row that does not say so is worse
+            // than no row at all.
+            let preset = crate::client::powerd_managing_profiles();
             for knob in thermal {
                 self.add_knob_row(&group, knob);
+                if let Some(note) = crate::client::contested_by_powerd(knob, preset.as_deref()) {
+                    self.set_row_subtitle(&knob.id, &note);
+                }
             }
         }
 
@@ -737,6 +745,28 @@ impl Window {
                 }
                 row
             }
+        }
+    }
+
+    /// Put a subtitle on a control's row, whichever widget kind it turned into.
+    ///
+    /// `add_knob_row` returns an unattached placeholder for the domains that
+    /// become a `ComboRow` or a `SwitchRow`, because those are not `ActionRow`s
+    /// and there is nothing useful to hand back. Setting a subtitle on that
+    /// placeholder silently does nothing, so anything with something to say
+    /// about a row goes through here instead.
+    fn set_row_subtitle(&self, knob_id: &str, text: &str) {
+        let rows = self.rows.borrow();
+        match rows.get(knob_id) {
+            Some(RowWidget::Combo { row, .. }) => {
+                row.set_subtitle(text);
+                row.set_subtitle_lines(0);
+            }
+            Some(RowWidget::Switch(row)) => {
+                row.set_subtitle(text);
+                row.set_subtitle_lines(0);
+            }
+            _ => {}
         }
     }
 
