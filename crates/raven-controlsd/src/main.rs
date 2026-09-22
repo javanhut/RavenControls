@@ -25,7 +25,7 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use raven_hw::ipc::{GROUP, SOCKET};
 use raven_hw::Root;
@@ -192,7 +192,7 @@ fn spawn_watchdog(supervisor: Arc<Mutex<Supervisor>>, root: Root) {
                 tripped = false;
                 continue;
             }
-            let age = now_secs().saturating_sub(heartbeat.load(Ordering::Relaxed));
+            let age = supervisor::now_secs().saturating_sub(heartbeat.load(Ordering::Relaxed));
             if age > supervisor::WATCHDOG.as_secs() {
                 if !tripped {
                     tracing::error!(
@@ -207,13 +207,6 @@ fn spawn_watchdog(supervisor: Arc<Mutex<Supervisor>>, root: Root) {
             }
         }
     });
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Put every hwmon PWM channel back on firmware control, without consulting any

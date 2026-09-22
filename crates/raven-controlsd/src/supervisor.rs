@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use raven_hw::curve::{Curve, Reason, Runner};
 use raven_hw::guard::Guard;
@@ -39,17 +39,24 @@ pub struct Supervisor {
     guard: Guard,
     driven: BTreeMap<String, Driven>,
     state_path: std::path::PathBuf,
-    /// Seconds since the epoch of the last completed tick, read by the
-    /// watchdog thread. An atomic rather than a lock, because the watchdog must
-    /// not be able to block on the thing it is watching.
+    /// [`now_secs`] at the last completed tick, read by the watchdog thread.
+    /// An atomic rather than a lock, because the watchdog must not be able to
+    /// block on the thing it is watching.
     heartbeat: std::sync::Arc<AtomicU64>,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+/// Seconds on the monotonic clock, counted from the first call.
+///
+/// Not the wall clock, which this used to be. The wall clock keeps running
+/// while the machine is suspended, so every resume found the heartbeat as old
+/// as the sleep and tripped the watchdog -- handing the fans to firmware on
+/// every lid open -- and it jumps when the time is synced, which can trip it
+/// just the same or, stepped backwards, stop it tripping at all. `Instant` is
+/// `CLOCK_MONOTONIC` on Linux: it never jumps and it stands still in suspend,
+/// when the curve loop is frozen too.
+pub fn now_secs() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs()
 }
 
 impl Supervisor {
