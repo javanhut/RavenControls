@@ -1,6 +1,6 @@
 //! The desktop's appearance settings, as Raven Settings writes them.
 //!
-//! `~/.config/desktop.toml` is the shared file: Raven Settings' Appearance page
+//! `~/.config/raven/desktop.toml` is the shared file: Raven Settings' Appearance page
 //! writes it, and every Raven application reads it so that changing the accent
 //! in one place changes it everywhere. RavenControls only reads, and only the
 //! three fields it can act on -- the rest of that file belongs to other
@@ -50,11 +50,14 @@ struct DesktopConfig {
     appearance: Appearance,
 }
 
+/// `$XDG_CONFIG_HOME/raven/desktop.toml`, where Raven Settings writes it.
 pub fn path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
+        .join("raven")
         .join("desktop.toml")
 }
 
@@ -119,6 +122,11 @@ mod tests {
         assert_eq!(config.appearance.accent, DEFAULT_ACCENT);
         assert_eq!(config.appearance.theme_mode, ThemeMode::Dark);
         assert!(config.appearance.transparency);
+    }
+
+    #[test]
+    fn the_file_is_the_one_in_the_raven_directory() {
+        assert!(path().ends_with("raven/desktop.toml"));
     }
 
     #[test]

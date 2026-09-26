@@ -189,6 +189,11 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         });
     }
+    {
+        // Straight away when Settings saves, rather than on the next tick.
+        let ui = ui.clone();
+        theme::watch_desktop(move || ui.follow_appearance());
+    }
 
     window.present();
 }
@@ -231,16 +236,25 @@ impl Window {
         self.toasts.add_toast(toast);
     }
 
+    /// Re-read `desktop.toml` and restyle if it changed.
+    fn follow_appearance(&self) {
+        let appearance = config::appearance();
+        if appearance != *self.appearance.borrow() {
+            theme::apply(&self.window, &appearance);
+            *self.appearance.borrow_mut() = appearance;
+            // The curve is drawn in the accent, not styled with it.
+            if let Some(editor) = self.live.borrow().as_ref() {
+                editor.widget.queue_draw();
+            }
+        }
+    }
+
     fn refresh(self: &Rc<Self>) {
         // The accent and the glass switch live in Raven Settings, in a file
         // this application only reads. Checking it on the refresh tick is what
         // makes changing the theme there change this window without a restart,
         // and it is one small `read_to_string` every two seconds.
-        let appearance = config::appearance();
-        if appearance != *self.appearance.borrow() {
-            theme::apply(&self.window, &appearance);
-            *self.appearance.borrow_mut() = appearance;
-        }
+        self.follow_appearance();
 
         let snapshot = self.client.snapshot();
         let signature = signature(&snapshot);

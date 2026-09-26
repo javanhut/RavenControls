@@ -158,6 +158,14 @@ window.raven.glass .curve-frame {
   background-color: alpha(#ffffff, 0.45);
   border-color: alpha(#000000, 0.08);
 }
+window.raven.glass .sidebar { border-right-color: alpha(#000000, 0.07); }
+window.raven.glass headerbar { border-bottom-color: alpha(#000000, 0.07); }
+window.raven.glass switch,
+window.raven.glass scale trough,
+window.raven.glass dropdown > button,
+window.raven.glass spinbutton {
+  background-color: alpha(#000000, 0.10);
+}
 "#;
 
 pub fn load_base() {
@@ -227,6 +235,69 @@ pub fn apply(window: &impl IsA<gtk::Widget>, appearance: &Appearance) {
         );
         *slot.borrow_mut() = Some(provider);
     });
+}
+
+thread_local! {
+    /// One per open window; dropping a monitor stops its watch.
+    static DESKTOP_MONITORS: std::cell::RefCell<Vec<gtk::gio::FileMonitor>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How long `desktop.toml` has to stay quiet before it is read again: one
+/// save from Settings arrives as a burst of events.
+const DESKTOP_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Call `changed` whenever Raven Settings rewrites `desktop.toml`. The
+/// directory is watched, not the file, because Settings replaces the file by
+/// rename and it may not exist yet.
+pub fn watch_desktop(changed: impl Fn() + 'static) {
+    use gtk::{gio, glib};
+    use std::{cell::RefCell, rc::Rc};
+
+    let path = config::path();
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let name = name.to_os_string();
+    let monitor = match gio::File::for_path(dir)
+        .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+    {
+        Ok(monitor) => monitor,
+        Err(e) => {
+            tracing::debug!("not following {}: {e}", path.display());
+            return;
+        }
+    };
+    let changed = Rc::new(changed);
+    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    monitor.connect_changed(move |_, file, other, event| {
+        if matches!(
+            event,
+            gio::FileMonitorEvent::AttributeChanged
+                | gio::FileMonitorEvent::PreUnmount
+                | gio::FileMonitorEvent::Unmounted
+        ) {
+            return;
+        }
+        let names_desktop = |f: Option<&gio::File>| {
+            f.and_then(|f| f.basename())
+                .is_some_and(|b| b.as_os_str() == name.as_os_str())
+        };
+        if !names_desktop(Some(file)) && !names_desktop(other) {
+            return;
+        }
+        if let Some(id) = pending.borrow_mut().take() {
+            id.remove();
+        }
+        let fired = pending.clone();
+        let changed = changed.clone();
+        let id = glib::timeout_add_local_once(DESKTOP_SETTLE, move || {
+            fired.borrow_mut().take();
+            changed();
+        });
+        *pending.borrow_mut() = Some(id);
+    });
+    DESKTOP_MONITORS.with(|m| m.borrow_mut().push(monitor));
 }
 
 #[cfg(test)]
