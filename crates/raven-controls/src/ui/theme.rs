@@ -11,7 +11,7 @@
 //! without a second stylesheet.
 //!
 //! Two providers, at two priorities: the base palette, and an override that
-//! carries the accent and the light-mode swap. Rebuilding only the second is
+//! carries the accent, the light-mode swap and the glass theme. Rebuilding only the second is
 //! what lets the accent change without reloading everything.
 
 use gtk::prelude::*;
@@ -124,6 +124,22 @@ window.raven.glass .curve-frame {
 }
 "#;
 
+/// Laid over [`crate::glass_tint::css`] when the glass theme is not Black:
+/// the glass keeps this window's own alpha, and the few grounds the base
+/// palette spells out rather than naming follow the theme's.
+const GLASS_THEME_CSS: &str = r#"
+@define-color borders mix(@window_bg_color, @window_fg_color, 0.12);
+headerbar { border-bottom-color: @borders; }
+.sidebar { background-color: @sidebar_bg_color; border-right-color: @borders; }
+.card, .raven-card { background-color: @dialog_bg_color; border-color: @borders; }
+window.raven.glass { background-color: alpha(@window_bg_color, 0.72); }
+"#;
+
+/// [`GLASS_THEME_CSS`]'s glass alpha on a light desktop, as in [`LIGHT_CSS`].
+const GLASS_THEME_LIGHT_CSS: &str = r#"
+window.raven.glass { background-color: alpha(@window_bg_color, 0.80); }
+"#;
+
 /// The light-mode half of the palette, swapped in over the base.
 const LIGHT_CSS: &str = r#"
 @define-color window_bg_color #eef0f6;
@@ -187,7 +203,7 @@ thread_local! {
 }
 
 /// Point every `@accent_bg_color` at the configured accent, set light or dark,
-/// and put the window in or out of glass.
+/// tint for the glass theme, and put the window in or out of glass.
 pub fn apply(window: &impl IsA<gtk::Widget>, appearance: &Appearance) {
     if appearance.transparency {
         window.add_css_class("glass");
@@ -209,15 +225,21 @@ pub fn apply(window: &impl IsA<gtk::Widget>, appearance: &Appearance) {
     } else {
         config::DEFAULT_ACCENT
     };
-    let css = format!(
+    let light = appearance.theme_mode == ThemeMode::Light;
+    let mut css = format!(
         "@define-color accent_bg_color {accent};\n\
          @define-color accent_color {accent};\n{}",
-        if appearance.theme_mode == ThemeMode::Light {
-            LIGHT_CSS
-        } else {
-            ""
-        }
+        if light { LIGHT_CSS } else { "" }
     );
+    // Black Glass is the palette above as it is.
+    let tint = crate::glass_tint::css(&appearance.glass_theme, light);
+    if !tint.is_empty() {
+        css.push_str(&tint);
+        css.push_str(GLASS_THEME_CSS);
+        if light {
+            css.push_str(GLASS_THEME_LIGHT_CSS);
+        }
+    }
 
     let Some(display) = gtk::gdk::Display::default() else {
         return;
@@ -369,6 +391,23 @@ mod tests {
                 "@define-color accent_bg_color {};\n@define-color accent_color {};\n{LIGHT_CSS}",
                 config::DEFAULT_ACCENT,
                 config::DEFAULT_ACCENT
+            ),
+        );
+    }
+
+    #[test]
+    fn a_glass_theme_parses_on_top_of_the_base() {
+        // One parse for both schemes: `assert_parses` initialises GTK, which
+        // a test thread gets one try at.
+        let (dark, light) = (
+            crate::glass_tint::css("rose", false),
+            crate::glass_tint::css("rose", true),
+        );
+        assert!(!dark.is_empty() && !light.is_empty());
+        assert_parses(
+            "glass theme override",
+            &format!(
+                "{BASE_CSS}\n{dark}{GLASS_THEME_CSS}\n{LIGHT_CSS}\n{light}{GLASS_THEME_CSS}{GLASS_THEME_LIGHT_CSS}"
             ),
         );
     }

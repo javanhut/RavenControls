@@ -32,6 +32,9 @@ pub struct Appearance {
     pub accent: String,
     /// The glass shell: a translucent window for the compositor to blur behind.
     pub transparency: bool,
+    /// Black, Fog, Arctic, Midnight or Rose; see `crate::glass_tint`.
+    /// Empty (or anything unknown) is Black Glass.
+    pub glass_theme: String,
 }
 
 impl Default for Appearance {
@@ -40,6 +43,7 @@ impl Default for Appearance {
             theme_mode: ThemeMode::default(),
             accent: DEFAULT_ACCENT.into(),
             transparency: true,
+            glass_theme: String::new(),
         }
     }
 }
