@@ -32,7 +32,8 @@ pub struct Appearance {
     pub accent: String,
     /// The glass shell: a translucent window for the compositor to blur behind.
     pub transparency: bool,
-    /// Black, Fog, Arctic, Midnight or Rose; see `crate::glass_tint`.
+    /// Black, Fog, Arctic, Midnight, Rose, Tokyo Neon, Clear, Ember or
+    /// Nebula; see `crate::glass_tint`.
     /// Empty (or anything unknown) is Black Glass.
     pub glass_theme: String,
 }
