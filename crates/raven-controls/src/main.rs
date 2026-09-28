@@ -7,7 +7,6 @@
 mod capture;
 mod client;
 mod config;
-mod glass_tint;
 mod ui;
 
 use gtk::glib;

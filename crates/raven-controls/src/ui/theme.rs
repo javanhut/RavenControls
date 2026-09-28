@@ -124,7 +124,7 @@ window.raven.glass .curve-frame {
 }
 "#;
 
-/// Laid over [`crate::glass_tint::css`] when the glass theme is not Black:
+/// Laid over [`raven_glass::tint::css`] when the glass theme is not Black:
 /// the glass keeps this window's own alpha, and the few grounds the base
 /// palette spells out rather than naming follow the theme's.
 const GLASS_THEME_CSS: &str = r#"
@@ -232,7 +232,7 @@ pub fn apply(window: &impl IsA<gtk::Widget>, appearance: &Appearance) {
         if light { LIGHT_CSS } else { "" }
     );
     // Black Glass is the palette above as it is.
-    let tint = crate::glass_tint::css(&appearance.glass_theme, light);
+    let tint = raven_glass::tint::css(&appearance.glass_theme, light);
     if !tint.is_empty() {
         css.push_str(&tint);
         css.push_str(GLASS_THEME_CSS);
@@ -400,8 +400,8 @@ mod tests {
         // One parse for both schemes: `assert_parses` initialises GTK, which
         // a test thread gets one try at.
         let (dark, light) = (
-            crate::glass_tint::css("rose", false),
-            crate::glass_tint::css("rose", true),
+            raven_glass::tint::css("rose", false),
+            raven_glass::tint::css("rose", true),
         );
         assert!(!dark.is_empty() && !light.is_empty());
         assert_parses(

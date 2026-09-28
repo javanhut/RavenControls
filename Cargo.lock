@@ -950,6 +950,7 @@ dependencies = [
  "glib",
  "gtk4",
  "libadwaita",
+ "raven-glass",
  "raven-hw",
  "serde",
  "serde_json",
@@ -970,6 +971,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "raven-glass"
+version = "0.0.1"
 
 [[package]]
 name = "raven-hw"
